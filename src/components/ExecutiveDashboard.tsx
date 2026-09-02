@@ -115,8 +115,14 @@ export const ExecutiveDashboard: React.FC<Props> = ({ onStartVoiceCall }) => {
     <div className="flex flex-col min-h-screen pb-24 px-4 pt-12 select-none">
       {/* HEADER: Persona & Voice Call Trigger */}
       <div className="flex items-center justify-between mb-5">
-        <div>
-          <div className="flex items-center gap-1.5">
+        <div className="flex items-center gap-3">
+          <img
+            src="/bowcon-logo.png"
+            alt="BOWCON"
+            className="w-11 h-11 rounded-2xl border border-cyan-500/40 shadow-md shadow-cyan-500/20 object-cover"
+          />
+          <div>
+            <div className="flex items-center gap-1.5">
             <span className="w-2 h-2 rounded-full bg-cyan-400 animate-ping" />
             <span className="text-[11px] font-mono tracking-widest text-cyan-400 uppercase">
               Autonomous Level 4.0
@@ -129,6 +135,7 @@ export const ExecutiveDashboard: React.FC<Props> = ({ onStartVoiceCall }) => {
             </span>
           </h1>
         </div>
+      </div>
 
         {/* CALL BOWCON FLOATING BUTTON */}
         <button

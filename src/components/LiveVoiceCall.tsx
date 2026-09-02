@@ -113,8 +113,12 @@ export const LiveVoiceCall: React.FC<Props> = ({ onEndCall }) => {
 
       {/* TOP BAR: Call Status & Time */}
       <div className="relative z-10 flex items-center justify-between px-2">
-        <div className="flex items-center gap-2">
-          <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse" />
+        <div className="flex items-center gap-2.5">
+          <img
+            src="/bowcon-logo.png"
+            alt="BOWCON"
+            className="w-9 h-9 rounded-xl border border-cyan-500/40 shadow-sm object-cover"
+          />
           <div>
             <h1 className="text-base font-bold tracking-wider text-white flex items-center gap-1.5">
               BOWCON V4.0
