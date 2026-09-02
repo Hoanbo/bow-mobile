@@ -292,7 +292,10 @@ export function App() {
       {/* ===================================================================
           3. KHUNG PHỤ ĐỀ NỔI TRỰC TIẾP (LIVE TRANSCRIPT BOX)
           =================================================================== */}
-      <div className="live-transcript-box">
+      <div className="live-transcript-box" onClick={() => {
+          const text = window.prompt("Nhập khẩu lệnh hoặc nói qua bàn phím iPhone cho BOWCON:");
+          if (text && text.trim()) globalVoiceService.sendVoiceCommand(text.trim());
+        }} title="Chạm để nói hoặc nhập lệnh" style={{ cursor: "pointer" }}>
         {bargeInNotice && (
           <div className="barge-in-badge">
             <Zap size={11} />

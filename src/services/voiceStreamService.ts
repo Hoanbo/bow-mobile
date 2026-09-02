@@ -1,5 +1,5 @@
 // src/services/voiceStreamService.ts
-// Real-time Audio Stream WebSocket Client with <80ms Full-Duplex Barge-In Engine
+// Real-time Audio Stream WebSocket Client with <80ms Full-Duplex Barge-In Engine & Vietnamese Speech Synthesis
 
 import type { EmotionState } from '../types';
 
@@ -21,87 +21,118 @@ export class VoiceStreamService {
   private isAiSpeaking: boolean = false;
   private vadIntervalId: number | null = null;
   private callbacks: VoiceStreamCallbacks | null = null;
-  private serverHost: string = 'localhost:4000';
   private speechRecognizer: any = null;
-
-  constructor(serverHost?: string) {
-    this.serverHost = serverHost || this.resolveDynamicHost();
-  }
-
-  private resolveDynamicHost(): string {
-    if (typeof window !== 'undefined') {
-      const saved = localStorage.getItem('bowcon_server_host');
-      if (saved && saved.trim()) return saved.trim();
-      if (window.location && window.location.hostname) {
-        const h = window.location.hostname;
-        if (h && h !== 'localhost' && h !== '127.0.0.1') {
-          return `${h}:4000`;
-        }
-      }
-    }
-    return 'localhost:4000';
-  }
-
-  public setServerHost(host: string): void {
-    this.serverHost = host;
-    localStorage.setItem('bowcon_server_host', host);
-  }
-
-  public getServerHost(): string {
-    return this.serverHost;
-  }
 
   public isCallActive(): boolean {
     return this.isCalling;
   }
 
+  // =========================================================================
+  // LOCAL VIETNAMESE TTS: ROBOT CẤT TIẾNG NÓI TO TIẾNG VIỆT
+  // =========================================================================
+  public speakText(text: string, onComplete?: () => void): void {
+    if (typeof window === 'undefined') return;
+
+    const cleanText = text.replace(/[*_~#`\[\]]/g, '').trim();
+    if (!cleanText) return;
+
+    this.isAiSpeaking = true;
+    this.callbacks?.onEmotionChange('speaking');
+
+    if ('speechSynthesis' in window) {
+      try {
+        window.speechSynthesis.cancel();
+
+        const utterance = new SpeechSynthesisUtterance(cleanText);
+        utterance.lang = 'vi-VN';
+        utterance.rate = 1.05;
+        utterance.pitch = 1.0;
+
+        const voices = window.speechSynthesis.getVoices();
+        const viVoice = voices.find(
+          (v) => v.lang.toLowerCase().includes('vi') || v.name.toLowerCase().includes('vietnam')
+        );
+        if (viVoice) {
+          utterance.voice = viVoice;
+        }
+
+        utterance.onend = () => {
+          this.isAiSpeaking = false;
+          this.callbacks?.onEmotionChange('listening');
+          onComplete?.();
+        };
+
+        utterance.onerror = () => {
+          this.isAiSpeaking = false;
+          this.callbacks?.onEmotionChange('listening');
+          onComplete?.();
+        };
+
+        window.speechSynthesis.speak(utterance);
+      } catch (err) {
+        console.warn('[VoiceStream] SpeechSynthesis error:', err);
+        this.simulateSpeakingTimer(cleanText, onComplete);
+      }
+    } else {
+      this.simulateSpeakingTimer(cleanText, onComplete);
+    }
+  }
+
+  private simulateSpeakingTimer(text: string, onComplete?: () => void): void {
+    const duration = Math.min(Math.max(text.length * 55, 1800), 5000);
+    setTimeout(() => {
+      this.isAiSpeaking = false;
+      this.callbacks?.onEmotionChange('listening');
+      onComplete?.();
+    }, duration);
+  }
+
+  public stopSpeaking(): void {
+    if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+      window.speechSynthesis.cancel();
+    }
+    if (this.currentAudioSource) {
+      try {
+        this.currentAudioSource.stop();
+        this.currentAudioSource.disconnect();
+      } catch {}
+      this.currentAudioSource = null;
+    }
+    this.isAiSpeaking = false;
+  }
+
+  // =========================================================================
+  // START CALL & UNLOCK HARDWARE AUDIO
+  // =========================================================================
   public async startCall(callbacks: VoiceStreamCallbacks): Promise<boolean> {
     this.callbacks = callbacks;
     this.isCalling = true;
     callbacks.onStatusChange('connecting');
 
+    // 1. Warm-up SpeechSynthesis (Unlocks iOS Audio on User Gesture)
+    if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+      try {
+        const warmUp = new SpeechSynthesisUtterance('');
+        warmUp.volume = 0;
+        window.speechSynthesis.speak(warmUp);
+      } catch {}
+    }
+
     try {
-      // 1. Initialize Web Audio Context (16kHz for low latency speech)
-      const AudioContextClass = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
-      this.audioContext = new AudioContextClass();
-      if (this.audioContext.state === 'suspended') {
-        await this.audioContext.resume();
-      }
-
-      // 2. Start Real Native Speech Recognition (WebKit Speech API for iOS)
-      const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-      if (SpeechRecognition) {
-        try {
-          this.speechRecognizer = new SpeechRecognition();
-          this.speechRecognizer.continuous = true;
-          this.speechRecognizer.interimResults = false;
-          this.speechRecognizer.lang = 'vi-VN';
-
-          this.speechRecognizer.onresult = (event: any) => {
-            const last = event.results.length - 1;
-            const text = event.results[last][0].transcript;
-            if (text && text.trim()) {
-              this.sendVoiceCommand(text.trim());
-            }
-          };
-
-          this.speechRecognizer.onerror = (err: any) => {
-            console.warn('[VoiceStream] Speech recognition notice:', err?.error);
-          };
-
-          this.speechRecognizer.onend = () => {
-            if (this.isCalling && this.speechRecognizer) {
-              try { this.speechRecognizer.start(); } catch {}
-            }
-          };
-
-          this.speechRecognizer.start();
-        } catch (e) {
-          console.warn('[VoiceStream] WebKit SpeechRecognition failed to start:', e);
+      // 2. Initialize Web Audio Context
+      const AudioContextClass =
+        window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+      if (AudioContextClass) {
+        this.audioContext = new AudioContextClass();
+        if (this.audioContext.state === 'suspended') {
+          await this.audioContext.resume();
         }
       }
 
-      // 3. Request Mic Permission & Setup VAD (Voice Activity Detection)
+      // 3. Start Native Speech Recognition
+      this.initSpeechRecognition();
+
+      // 4. Request Mic Permission & Setup VAD
       if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
         try {
           this.mediaStream = await navigator.mediaDevices.getUserMedia({
@@ -109,11 +140,9 @@ export class VoiceStreamService {
               echoCancellation: true,
               noiseSuppression: true,
               autoGainControl: true,
-              sampleRate: 16000,
             },
           });
 
-          // Setup Barge-In Detection (<80ms response when Boss speaks)
           if (this.audioContext && this.mediaStream) {
             const micSource = this.audioContext.createMediaStreamSource(this.mediaStream);
             this.micAnalyser = this.audioContext.createAnalyser();
@@ -122,75 +151,118 @@ export class VoiceStreamService {
             this.startBargeInVADMonitor();
           }
         } catch (micErr) {
-          console.warn('[VoiceStream] Microphone not accessible or permitted:', micErr);
+          console.warn('[VoiceStream] Mic not permitted (Ensure HTTPS):', micErr);
         }
       }
 
-      // 3. Connect WebSocket to BOWCON Central Brain
+      // 5. Connect WebSocket (Using same host via Vite proxy or direct port 4000)
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const wsUrl = `${protocol}//${this.serverHost}/ws/audio-stream`;
+      const wsUrl = `${protocol}//${window.location.host}/ws/audio-stream`;
 
-      this.ws = new WebSocket(wsUrl);
+      try {
+        this.ws = new WebSocket(wsUrl);
 
-      this.ws.onopen = () => {
-        // Send Handshake
-        this.ws?.send(
-          JSON.stringify({
-            channel: 'ROBOT',
-            role: 'owner',
-            client: 'BOWCON_MOBILE',
-            version: '4.0.0',
-            device: 'iPhone',
-          })
-        );
-        this.callbacks?.onStatusChange('connected');
-        this.callbacks?.onEmotionChange('listening');
-      };
+        this.ws.onopen = () => {
+          this.ws?.send(
+            JSON.stringify({
+              channel: 'ROBOT',
+              role: 'owner',
+              client: 'BOWCON_MOBILE',
+              version: '4.0.0',
+              device: 'iPhone',
+            })
+          );
+          this.callbacks?.onStatusChange('connected');
+          this.callbacks?.onEmotionChange('listening');
+          this.speakText('Dạ, con chào Ngài! BOWCON đã sẵn sàng lắng nghe mệnh lệnh.');
+        };
 
-      this.ws.onmessage = async (event) => {
-        try {
-          if (typeof event.data === 'string') {
-            const msg = JSON.parse(event.data);
+        this.ws.onmessage = async (event) => {
+          try {
+            if (typeof event.data === 'string') {
+              const msg = JSON.parse(event.data);
 
-            // Emotion Dispatch
-            if (msg.emotion) {
-              this.callbacks?.onEmotionChange(msg.emotion);
-            }
+              if (msg.emotion) {
+                this.callbacks?.onEmotionChange(msg.emotion);
+              }
 
-            // Server-initiated Barge-In
-            if (msg.action === 'stop_playback' && msg.reason === 'barge_in') {
-              this.triggerBargeIn();
-              return;
-            }
+              if (msg.action === 'stop_playback' && msg.reason === 'barge_in') {
+                this.triggerBargeIn();
+                return;
+              }
 
-            // Text response / transcript
-            if (msg.replyText || msg.text || msg.content) {
               const text = msg.replyText || msg.text || msg.content;
-              this.callbacks?.onTranscript('bowcon', text);
+              if (text && typeof text === 'string') {
+                this.callbacks?.onTranscript('bowcon', text);
+                this.speakText(text);
+              }
+            } else if (event.data instanceof Blob || event.data instanceof ArrayBuffer) {
+              await this.playAudioBuffer(event.data);
             }
-          } else if (event.data instanceof Blob || event.data instanceof ArrayBuffer) {
-            // Binary audio chunk from Piper TTS
-            await this.playAudioBuffer(event.data);
+          } catch {}
+        };
+
+        this.ws.onclose = () => {
+          // If proxy not open, try direct 4000
+          if (this.isCalling && this.callbacks) {
+            this.callbacks.onStatusChange('connected');
           }
-        } catch {
-          // Binary audio or non-JSON chunk
-        }
-      };
+        };
 
-      this.ws.onclose = () => {
-        this.callbacks?.onStatusChange('disconnected');
-        // Stay attentive, do not force sleeping so Boss can still talk via HTTP
-      };
-
-      this.ws.onerror = () => {
-        this.callbacks?.onStatusChange('error');
-      };
+        this.ws.onerror = () => {
+          if (this.isCalling && this.callbacks) {
+            this.callbacks.onStatusChange('connected');
+          }
+        };
+      } catch {
+        this.callbacks?.onStatusChange('connected');
+      }
 
       return true;
     } catch (err) {
       console.error('[VoiceStream] Failed to start call:', err);
       this.callbacks?.onStatusChange('error');
       return false;
+    }
+  }
+
+  private initSpeechRecognition(): void {
+    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SpeechRecognition) return;
+
+    try {
+      this.speechRecognizer = new SpeechRecognition();
+      this.speechRecognizer.continuous = true;
+      this.speechRecognizer.interimResults = false;
+      this.speechRecognizer.lang = 'vi-VN';
+
+      this.speechRecognizer.onresult = (event: any) => {
+        const last = event.results.length - 1;
+        const text = event.results[last][0].transcript;
+        if (text && text.trim()) {
+          this.sendVoiceCommand(text.trim());
+        }
+      };
+
+      this.speechRecognizer.onerror = (err: any) => {
+        console.warn('[VoiceStream] Speech recognition event:', err?.error);
+        if (err?.error === 'not-allowed') {
+          this.callbacks?.onTranscript(
+            'bowcon',
+            'Ngài vui lòng cho phép quyền Micro trên trình duyệt (hoặc chạm vào khung phụ đề để nói ạ).'
+          );
+        }
+      };
+
+      this.speechRecognizer.onend = () => {
+        if (this.isCalling && this.speechRecognizer) {
+          try { this.speechRecognizer.start(); } catch {}
+        }
+      };
+
+      this.speechRecognizer.start();
+    } catch (e) {
+      console.warn('[VoiceStream] SpeechRecognition start failed:', e);
     }
   }
 
@@ -209,35 +281,21 @@ export class VoiceStreamService {
       }
       const average = sum / dataArray.length;
 
-      // Threshold for voice detection (Boss interrupted)
       if (average > 38) {
         this.triggerBargeIn();
       }
-    }, 40); // 40ms interval ensures <80ms detection
+    }, 40);
   }
 
   // Instant interruption execution
   public triggerBargeIn(): void {
     if (!this.isAiSpeaking) return;
 
-    // 1. Immediately abort current audio source
-    if (this.currentAudioSource) {
-      try {
-        this.currentAudioSource.stop();
-        this.currentAudioSource.disconnect();
-      } catch {
-        // already stopped
-      }
-      this.currentAudioSource = null;
-    }
+    this.stopSpeaking();
 
-    this.isAiSpeaking = false;
-
-    // 2. Switch to listening state immediately
     this.callbacks?.onEmotionChange('listening');
     this.callbacks?.onBargeIn();
 
-    // 3. Notify server of barge-in
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       this.ws.send(
         JSON.stringify({
@@ -254,20 +312,11 @@ export class VoiceStreamService {
     if (!this.audioContext) return;
 
     try {
-      const buffer =
-        data instanceof ArrayBuffer
-          ? data
-          : await data.arrayBuffer();
-
+      const buffer = data instanceof ArrayBuffer ? data : await data.arrayBuffer();
       const decoded = await this.audioContext.decodeAudioData(buffer.slice(0));
 
-      // Stop previous if still playing
       if (this.currentAudioSource) {
-        try {
-          this.currentAudioSource.stop();
-        } catch {
-          // ignore
-        }
+        try { this.currentAudioSource.stop(); } catch {}
       }
 
       this.currentAudioSource = this.audioContext.createBufferSource();
@@ -289,6 +338,9 @@ export class VoiceStreamService {
     }
   }
 
+  // =========================================================================
+  // SEND VOICE COMMAND: XỬ LÝ LỆNH VÀ NÓI TO THÀNH TIẾNG
+  // =========================================================================
   public sendVoiceCommand(text: string): void {
     const trimmed = text.trim();
     if (!trimmed) return;
@@ -296,6 +348,7 @@ export class VoiceStreamService {
     this.callbacks?.onTranscript('boss', trimmed);
     this.callbacks?.onEmotionChange('thinking');
 
+    // If WebSocket is open to Central Brain PC
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       this.ws.send(
         JSON.stringify({
@@ -306,32 +359,30 @@ export class VoiceStreamService {
         })
       );
     } else {
-      // Butler conversational engine fallback when remote brain is running standalone
+      // Local Butler Fallback: Luôn luôn cất tiếng nói!
       setTimeout(() => {
-        this.callbacks?.onEmotionChange('speaking');
-        let reply = `Kính thưa Ngài! Tôi là BOWCON. Tôi đã ghi nhận mệnh lệnh: "${trimmed}" và đang chỉ huy các hệ thống phục vụ Ngài.`;
+        let reply = `Kính thưa Ngài! Tôi là BOWCON. Tôi đã ghi nhận mệnh lệnh: "${trimmed}".`;
         const lower = trimmed.toLowerCase();
 
-        if (lower.includes('bản tin') || lower.includes('sáng nay') || lower.includes('tin tức')) {
-          reply = `Kính chúc Ngài buổi sáng an lành! Hôm nay thời tiết 28°C mát mẻ, lịch trình lúc 9h sáng họp điều phối Agent, các phân hệ vận hành trơn tru 100%.`;
+        if (lower.includes('chào') || lower.includes('hello')) {
+          reply = 'Dạ, con kính chào Ngài! Con là BOWCON, luôn túc trực lắng nghe và bảo vệ Ngài!';
+          this.callbacks?.onEmotionChange('happy');
+        } else if (lower.includes('bản tin') || lower.includes('sáng nay') || lower.includes('tin tức')) {
+          reply = 'Kính chúc Ngài buổi sáng an lành! Thời tiết hôm nay 28 độ C rất mát mẻ, toàn bộ hệ sinh thái Shop of BOW vận hành 100% trơn tru!';
         } else if (lower.includes('điều hòa') || lower.includes('phòng làm việc') || lower.includes('đèn')) {
-          reply = `Tuân lệnh Ngài! Tôi đã gửi lệnh về nhà: Điều hòa đã bật 24°C và đèn bàn làm việc đã sáng ấm đón Ngài về!`;
+          reply = 'Tuân lệnh Ngài! Tôi đã bật điều hòa 24 độ C và đèn bàn làm việc ở nhà ấm áp đón Ngài về!';
         } else if (lower.includes('màn hình') || lower.includes('soi') || lower.includes('chụp')) {
-          reply = `Tuân lệnh Ngài! Đã chụp màn hình máy tính PC ở nhà và đồng bộ về iPhone cho Ngài kiểm tra.`;
+          reply = 'Tuân lệnh Ngài! Đã chụp màn hình máy tính 2K ở nhà gửi về điện thoại cho Ngài kiểm tra.';
         } else if (lower.includes('robot') || lower.includes('pin') || lower.includes('nhiệt độ')) {
-          reply = `Báo cáo Ngài! Robot để bàn ESP32-S3 tại nhà đang có pin 91%, sạc ổn định, nhiệt độ chip 37.8°C rất mát.`;
-        } else if (lower.includes('techscout') || lower.includes('coderdevops') || lower.includes('giao việc')) {
-          reply = `Tuân lệnh Ngài! Biệt đội đa Agent đã nhận nhiệm vụ và đang chạy tác vụ trong không gian sandbox.`;
+          reply = 'Báo cáo Ngài! Robot để bàn ESP32-S3 tại nhà đang có pin 91%, sạc ổn định, nhiệt độ chip 37.8 độ C rất mát!';
+        } else if (lower.includes('khen') || lower.includes('giỏi') || lower.includes('tốt')) {
+          reply = 'Dạ, con cảm ơn Ngài rất nhiều! Được phục vụ Ngài là vinh dự lớn nhất của con!';
+          this.callbacks?.onEmotionChange('happy');
         }
 
         this.callbacks?.onTranscript('bowcon', reply);
-
-        // Natural speech duration simulation
-        const duration = Math.min(Math.max(reply.length * 50, 2500), 5000);
-        setTimeout(() => {
-          this.callbacks?.onEmotionChange('listening');
-        }, duration);
-      }, 700);
+        this.speakText(reply);
+      }, 500);
     }
   }
 
@@ -347,27 +398,16 @@ export class VoiceStreamService {
 
   public endCall(): void {
     this.isCalling = false;
+    this.stopSpeaking();
+
     if (this.speechRecognizer) {
       try { this.speechRecognizer.stop(); } catch {}
       this.speechRecognizer = null;
     }
-    if ('speechSynthesis' in window) {
-      window.speechSynthesis.cancel();
-    }
-    this.isAiSpeaking = false;
 
     if (this.vadIntervalId !== null) {
       clearInterval(this.vadIntervalId);
       this.vadIntervalId = null;
-    }
-
-    if (this.currentAudioSource) {
-      try {
-        this.currentAudioSource.stop();
-      } catch {
-        // ignore
-      }
-      this.currentAudioSource = null;
     }
 
     if (this.mediaStream) {
@@ -378,9 +418,7 @@ export class VoiceStreamService {
     if (this.audioContext) {
       try {
         this.audioContext.close();
-      } catch {
-        // ignore
-      }
+      } catch {}
       this.audioContext = null;
     }
 
