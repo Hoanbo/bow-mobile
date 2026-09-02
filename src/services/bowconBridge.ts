@@ -20,10 +20,21 @@ export class BowconBridge {
   private serverHost: string = 'localhost:4000';
 
   constructor() {
-    const saved = localStorage.getItem('bowcon_server_host');
-    if (saved) {
-      this.serverHost = saved;
+    this.serverHost = this.resolveDynamicHost();
+  }
+
+  private resolveDynamicHost(): string {
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem('bowcon_server_host');
+      if (saved && saved.trim()) return saved.trim();
+      if (window.location && window.location.hostname) {
+        const h = window.location.hostname;
+        if (h && h !== 'localhost' && h !== '127.0.0.1') {
+          return `${h}:4000`;
+        }
+      }
     }
+    return 'localhost:4000';
   }
 
   public setServerHost(host: string): void {

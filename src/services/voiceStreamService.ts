@@ -22,10 +22,24 @@ export class VoiceStreamService {
   private vadIntervalId: number | null = null;
   private callbacks: VoiceStreamCallbacks | null = null;
   private serverHost: string = 'localhost:4000';
+  private speechRecognizer: any = null;
 
   constructor(serverHost?: string) {
-    const saved = localStorage.getItem('bowcon_server_host');
-    this.serverHost = serverHost || saved || 'localhost:4000';
+    this.serverHost = serverHost || this.resolveDynamicHost();
+  }
+
+  private resolveDynamicHost(): string {
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem('bowcon_server_host');
+      if (saved && saved.trim()) return saved.trim();
+      if (window.location && window.location.hostname) {
+        const h = window.location.hostname;
+        if (h && h !== 'localhost' && h !== '127.0.0.1') {
+          return `${h}:4000`;
+        }
+      }
+    }
+    return 'localhost:4000';
   }
 
   public setServerHost(host: string): void {
@@ -54,7 +68,40 @@ export class VoiceStreamService {
         await this.audioContext.resume();
       }
 
-      // 2. Request Mic Permission & Setup VAD (Voice Activity Detection)
+      // 2. Start Real Native Speech Recognition (WebKit Speech API for iOS)
+      const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+      if (SpeechRecognition) {
+        try {
+          this.speechRecognizer = new SpeechRecognition();
+          this.speechRecognizer.continuous = true;
+          this.speechRecognizer.interimResults = false;
+          this.speechRecognizer.lang = 'vi-VN';
+
+          this.speechRecognizer.onresult = (event: any) => {
+            const last = event.results.length - 1;
+            const text = event.results[last][0].transcript;
+            if (text && text.trim()) {
+              this.sendVoiceCommand(text.trim());
+            }
+          };
+
+          this.speechRecognizer.onerror = (err: any) => {
+            console.warn('[VoiceStream] Speech recognition notice:', err?.error);
+          };
+
+          this.speechRecognizer.onend = () => {
+            if (this.isCalling && this.speechRecognizer) {
+              try { this.speechRecognizer.start(); } catch {}
+            }
+          };
+
+          this.speechRecognizer.start();
+        } catch (e) {
+          console.warn('[VoiceStream] WebKit SpeechRecognition failed to start:', e);
+        }
+      }
+
+      // 3. Request Mic Permission & Setup VAD (Voice Activity Detection)
       if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
         try {
           this.mediaStream = await navigator.mediaDevices.getUserMedia({
@@ -132,7 +179,7 @@ export class VoiceStreamService {
 
       this.ws.onclose = () => {
         this.callbacks?.onStatusChange('disconnected');
-        this.callbacks?.onEmotionChange('sleeping');
+        // Stay attentive, do not force sleeping so Boss can still talk via HTTP
       };
 
       this.ws.onerror = () => {
@@ -300,6 +347,13 @@ export class VoiceStreamService {
 
   public endCall(): void {
     this.isCalling = false;
+    if (this.speechRecognizer) {
+      try { this.speechRecognizer.stop(); } catch {}
+      this.speechRecognizer = null;
+    }
+    if ('speechSynthesis' in window) {
+      window.speechSynthesis.cancel();
+    }
     this.isAiSpeaking = false;
 
     if (this.vadIntervalId !== null) {
