@@ -9,20 +9,12 @@ export interface BowconHandshake {
   device: 'iPhone';
 }
 
-export interface BowconCommandRequest {
-  text: string;
-  context?: {
-    channel: string;
-    role: string;
-    userId?: string;
-  };
-}
-
 export interface BowconCommandResponse {
   success: boolean;
   content: string;
   actionData?: any;
   speechAudioBase64?: string;
+  telemetry?: any;
 }
 
 export class BowconBridge {
@@ -67,11 +59,11 @@ export class BowconBridge {
   public async sendCommand(text: string): Promise<BowconCommandResponse> {
     try {
       const protocol = window.location.protocol === 'https:' ? 'https:' : 'http:';
-      const res = await fetch(`${protocol}//${this.serverHost}/api/command`, {
+      const res = await fetch(`${protocol}//${this.serverHost}/api/agent/query`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          text,
+          userText: text,
           context: {
             channel: 'ROBOT',
             role: 'owner',
@@ -82,10 +74,16 @@ export class BowconBridge {
       });
 
       if (res.ok) {
-        return await res.json();
+        const data = await res.json();
+        return {
+          success: true,
+          content: data.replyText || data.content || data.text || 'Đã thực thi lệnh.',
+          actionData: data.actionData,
+          speechAudioBase64: data.speechAudioBase64,
+        };
       }
-    } catch {
-      // Fallback
+    } catch (err) {
+      console.warn('[BowconBridge] Remote call failed, using intelligent local engine:', err);
     }
 
     return {
