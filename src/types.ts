@@ -1,9 +1,9 @@
 // src/types.ts
-// BOWCON Mobile - Core Domain & Telemetry Types
+// BOWCON Mobile - The Ultimate Pocket Embodied Companion & Butler Domain Types
 
-export type EmotionState = 'happy' | 'listening' | 'thinking' | 'speaking' | 'sleeping';
+export type EmotionState = 'listening' | 'thinking' | 'speaking' | 'happy' | 'sleeping';
 
-export type CallStatus = 'idle' | 'connecting' | 'listening' | 'speaking' | 'processing';
+export type CallStatus = 'idle' | 'connecting' | 'connected' | 'listening' | 'speaking' | 'processing' | 'error';
 
 export interface MessageTranscript {
   id: string;
@@ -12,35 +12,45 @@ export interface MessageTranscript {
   timestamp: string;
 }
 
-export interface ShopTelemetry {
-  revenueToday: number;
-  cogsToday: number;
-  netProfit: number;
-  profitMarginPercent: number;
-  pendingFulfillmentCount: number;
-  urgentOrdersCount: number;
-}
-
 export interface RobotTelemetry {
   batteryPercent: number;
   isCharging: boolean;
   temperatureCelsius: number;
-  headPanAngle: number;
+  headPanAngle?: number;
   isOnline: boolean;
+  firmwareVersion?: string;
+  lastHeartbeat?: string;
 }
 
 export interface SmartHomeState {
   deskLight: boolean;
   airConditioner: boolean;
   targetTemp: number;
+  statusDesc?: string;
 }
 
-export interface PendingOrder {
-  orderId: string;
-  customerName: string;
-  productName: string;
-  totalAmount: number;
-  costAmount: number;
-  minutesWaiting: number;
-  isUrgent: boolean;
+export interface ScreenCaptureResult {
+  displayId: 1 | 2;
+  timestamp: string;
+  imageUrl: string;
+  resolution?: string;
+  note?: string;
+}
+
+export interface MorningBriefing {
+  date: string;
+  greeting: string;
+  weather: string;
+  schedule: string[];
+  aiNews: string[];
+  quote: string;
+}
+
+export interface SubagentTask {
+  id: string;
+  agent: 'TechScout' | 'CoderDevOps';
+  prompt: string;
+  status: 'idle' | 'running' | 'completed' | 'failed';
+  result?: string;
+  timestamp: string;
 }

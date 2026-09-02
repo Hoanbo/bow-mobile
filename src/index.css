@@ -1,190 +1,714 @@
-/* BOWCON Mobile - Ultra-Premium Sci-Fi Design System */
+/* src/index.css */
+/* ==========================================================================
+   BOWCON MOBILE V4.0 — ALL-IN-ONE SINGLE SCREEN EMBODIED ROBOT & BUTLER
+   Pure Vanilla CSS for iPhone & iOS WebKit (No Tailwind, No Overflow)
+   ========================================================================== */
+
 :root {
-  --bg-primary: #07090e;
-  --bg-card: rgba(13, 18, 29, 0.75);
-  --bg-card-hover: rgba(20, 27, 45, 0.85);
-  --border-glow: rgba(0, 242, 254, 0.2);
-  --border-glow-active: rgba(0, 242, 254, 0.6);
-  --accent-cyan: #00f2fe;
-  --accent-blue: #4facfe;
-  --accent-amber: #f59e0b;
-  --accent-emerald: #10b981;
-  --accent-rose: #f43f5e;
-  --text-primary: #f8fafc;
-  --text-secondary: #94a3b8;
-  --text-muted: #64748b;
-  --oled-bg: #030712;
-  --oled-cyan: #00f2fe;
-  --safe-top: env(safe-area-inset-top, 20px);
+  /* Color Tokens */
+  --bg-black: #04060a;
+  --bg-panel: rgba(11, 17, 28, 0.72);
+  --bg-card: rgba(14, 21, 35, 0.85);
+  --bg-input: #0a0e18;
+  --oled-black: #010306;
+
+  --cyan-primary: #00f2fe;
+  --cyan-bright: #38bdf8;
+  --cyan-glow: rgba(0, 242, 254, 0.45);
+  --cyan-glow-subtle: rgba(0, 242, 254, 0.12);
+  --emerald-green: #10b981;
+  --emerald-glow: rgba(16, 185, 129, 0.45);
+  --amber-gold: #f59e0b;
+  --rose-danger: #f43f5e;
+  --rose-glow: rgba(244, 63, 94, 0.45);
+
+  --text-white: #ffffff;
+  --text-lead: #e2e8f0;
+  --text-muted: #94a3b8;
+  --text-dim: #64748b;
+
+  --border-cyan: rgba(0, 242, 254, 0.28);
+  --border-cyan-active: rgba(0, 242, 254, 0.75);
+  --border-glass: rgba(255, 255, 255, 0.08);
+
+  /* iOS Safe Area Insets */
+  --safe-top: env(safe-area-inset-top, 24px);
   --safe-bottom: env(safe-area-inset-bottom, 20px);
+  --safe-left: env(safe-area-inset-left, 0px);
+  --safe-right: env(safe-area-inset-right, 0px);
 }
 
-* {
+/* Reset & Mobile Constraints */
+*, *::before, *::after {
   box-sizing: border-box;
   margin: 0;
   padding: 0;
   -webkit-tap-highlight-color: transparent;
-  font-family: 'Outfit', sans-serif;
+  font-family: 'Outfit', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
 }
 
-body {
-  background-color: var(--bg-primary);
-  color: var(--text-primary);
-  min-height: 100vh;
-  min-height: 100dvh;
-  overflow-x: hidden;
-  position: relative;
+code, pre, .font-mono {
+  font-family: 'JetBrains Mono', monospace;
 }
 
-/* Glowing background ambient lights */
+html, body {
+  background-color: var(--bg-black);
+  color: var(--text-white);
+  height: 100%;
+  height: 100dvh;
+  width: 100%;
+  overflow: hidden;
+  user-select: none;
+  -webkit-user-select: none;
+  position: fixed;
+  inset: 0;
+}
+
+/* Ambient Radial Glow */
 body::before {
   content: '';
   position: fixed;
-  top: -10%;
+  top: 10%;
   left: 50%;
   transform: translateX(-50%);
   width: 320px;
   height: 320px;
-  background: radial-gradient(circle, rgba(0, 242, 254, 0.12) 0%, rgba(79, 172, 254, 0.05) 50%, transparent 70%);
+  background: radial-gradient(circle, rgba(0, 242, 254, 0.14) 0%, rgba(37, 99, 235, 0.04) 55%, transparent 75%);
   filter: blur(60px);
   pointer-events: none;
   z-index: 0;
 }
 
-/* Glassmorphism Card */
-.glass-panel {
-  background: var(--bg-card);
-  backdrop-filter: blur(24px);
-  -webkit-backdrop-filter: blur(24px);
-  border: 1px solid var(--border-glow);
-  border-radius: 20px;
-  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-}
-
-.glass-panel:hover {
-  border-color: var(--border-glow-active);
-  box-shadow: 0 8px 32px -4px rgba(0, 242, 254, 0.15);
-}
-
-.glass-panel-active {
-  border-color: var(--accent-cyan);
-  box-shadow: 0 0 24px rgba(0, 242, 254, 0.25);
-}
-
-/* OLED Screen Simulation Container */
-.oled-screen-frame {
-  background: var(--oled-bg);
-  border: 2px solid rgba(0, 242, 254, 0.3);
-  border-radius: 24px;
-  box-shadow: inset 0 0 20px rgba(0, 0, 0, 0.9), 0 0 24px rgba(0, 242, 254, 0.2);
+/* ==========================================================================
+   SINGLE SCREEN CONTAINER (FITS 100% OF IPHONE VIEWPORT)
+   ========================================================================== */
+.single-screen-app {
   position: relative;
+  height: 100vh;
+  height: 100dvh;
+  width: 100%;
+  max-width: 440px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  padding-top: var(--safe-top);
+  padding-bottom: var(--safe-bottom);
+  padding-left: 16px;
+  padding-right: 16px;
+  z-index: 1;
   overflow: hidden;
+}
+
+/* ==========================================================================
+   1. HEADER: 40px Logo + BOWCON V4.0 + Online Dot + Settings Gear
+   ========================================================================== */
+.app-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 4px 6px 4px;
+  flex-shrink: 0;
+}
+
+.header-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+/* Strict 40px x 40px Logo with Cyan Neon Glow */
+.brand-logo-40 {
+  width: 40px !important;
+  height: 40px !important;
+  min-width: 40px !important;
+  min-height: 40px !important;
+  max-width: 40px !important;
+  max-height: 40px !important;
+  border-radius: 10px !important;
+  object-fit: cover !important;
+  border: 1.5px solid rgba(0, 242, 254, 0.5) !important;
+  box-shadow: 0 0 12px rgba(0, 242, 254, 0.38), inset 0 0 6px rgba(0, 242, 254, 0.2) !important;
+  background: #000;
+  flex-shrink: 0;
+}
+
+.brand-info {
+  display: flex;
+  flex-direction: column;
+}
+
+.brand-title {
+  font-size: 14.5px;
+  font-weight: 800;
+  letter-spacing: 0.6px;
+  color: var(--text-white);
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  line-height: 1.2;
+}
+
+.brand-title .badge-v4 {
+  font-size: 9.5px;
+  font-weight: 700;
+  padding: 1px 5px;
+  border-radius: 5px;
+  background: rgba(0, 242, 254, 0.15);
+  color: var(--cyan-primary);
+  border: 1px solid rgba(0, 242, 254, 0.35);
+  font-family: 'JetBrains Mono', monospace;
+}
+
+.status-online-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4.5px;
+  font-size: 10.5px;
+  color: #34d399;
+  font-weight: 500;
+  margin-top: 1px;
+}
+
+.status-dot-green {
+  width: 6.5px;
+  height: 6.5px;
+  border-radius: 50%;
+  background-color: var(--emerald-green);
+  box-shadow: 0 0 8px var(--emerald-green);
+  animation: pulseDot 2s infinite ease-in-out;
+}
+
+@keyframes pulseDot {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.45; transform: scale(0.8); }
+}
+
+.btn-settings-gear {
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--border-glass);
+  color: var(--text-muted);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.btn-settings-gear:active {
+  transform: scale(0.92);
+  border-color: var(--cyan-primary);
+  color: var(--cyan-primary);
+}
+
+/* ==========================================================================
+   2. GRAND OLED ROBOT FACE (CENTER PIECE)
+   ========================================================================== */
+.oled-face-section {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 6px 0;
+  flex-shrink: 0;
+}
+
+/* Sound Wave Ripple Rings */
+.sound-rings-layer {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 280px;
+  height: 180px;
+  pointer-events: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 0;
+}
+
+.sound-ring-item {
+  position: absolute;
+  border-radius: 50%;
+  border: 1.5px solid var(--cyan-primary);
+  box-shadow: 0 0 16px var(--cyan-glow);
+  animation: soundPulseRing 2.4s cubic-bezier(0.2, 0.8, 0.2, 1) infinite;
+}
+
+.sound-ring-item:nth-child(1) { width: 210px; height: 120px; animation-delay: 0s; }
+.sound-ring-item:nth-child(2) { width: 260px; height: 145px; animation-delay: 0.8s; }
+.sound-ring-item:nth-child(3) { width: 310px; height: 170px; animation-delay: 1.6s; }
+
+@keyframes soundPulseRing {
+  0% { transform: scale(0.85); opacity: 0.85; }
+  50% { opacity: 0.35; }
+  100% { transform: scale(1.25); opacity: 0; }
+}
+
+/* OLED Screen Bezel */
+.oled-screen-frame {
+  position: relative;
+  z-index: 1;
+  background: var(--oled-black);
+  border: 2px solid rgba(0, 242, 254, 0.45);
+  border-radius: 24px;
+  box-shadow: 
+    0 0 28px rgba(0, 242, 254, 0.22), 
+    inset 0 0 20px rgba(0, 0, 0, 0.95),
+    inset 0 0 8px rgba(0, 242, 254, 0.18);
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.oled-screen-frame:active {
+  transform: scale(0.96);
 }
 
 .oled-screen-frame::after {
   content: '';
   position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
+  inset: 0;
   background: repeating-linear-gradient(
     0deg,
-    rgba(0, 0, 0, 0.15) 0px,
-    rgba(0, 0, 0, 0.15) 1px,
+    rgba(0, 0, 0, 0.16) 0px,
+    rgba(0, 0, 0, 0.16) 1px,
     transparent 1px,
     transparent 2px
   );
   pointer-events: none;
 }
 
-/* Sound Wave Pulse Rings */
-@keyframes soundPulse {
-  0% {
-    transform: scale(0.9);
-    opacity: 0.8;
-  }
-  50% {
-    transform: scale(1.15);
-    opacity: 0.3;
-  }
-  100% {
-    transform: scale(1.4);
-    opacity: 0;
-  }
+/* Emotion Status Tag below OLED frame */
+.emotion-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 8px;
+  padding: 3px 10px;
+  border-radius: 16px;
+  background: rgba(14, 21, 35, 0.7);
+  border: 1px solid rgba(0, 242, 254, 0.2);
+  font-size: 10.5px;
+  font-family: 'JetBrains Mono', monospace;
+  color: var(--cyan-bright);
 }
 
-.sound-ring {
-  position: absolute;
+.emotion-badge .dot {
+  width: 5px;
+  height: 5px;
   border-radius: 50%;
-  border: 1.5px solid var(--accent-cyan);
-  animation: soundPulse 2.4s infinite cubic-bezier(0.2, 0.8, 0.2, 1);
+  background: var(--cyan-primary);
+  animation: pulseDot 1.4s infinite ease-in-out;
 }
 
-.sound-ring:nth-child(2) {
-  animation-delay: 0.8s;
+/* ==========================================================================
+   3. LIVE TRANSCRIPT BOX (KHUNG PHỤ ĐỀ NỔI TRỰC TIẾP)
+   ========================================================================== */
+.live-transcript-box {
+  width: 100%;
+  background: var(--bg-panel);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid var(--border-cyan);
+  border-radius: 16px;
+  padding: 10px 12px;
+  max-height: 105px;
+  min-height: 72px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  flex-shrink: 1;
 }
 
-.sound-ring:nth-child(3) {
-  animation-delay: 1.6s;
+.transcript-entry {
+  display: flex;
+  flex-direction: column;
+  max-width: 95%;
+  padding: 6px 10px;
+  border-radius: 12px;
+  font-size: 12px;
+  line-height: 1.4;
+  animation: fadeInEntry 0.2s ease-out;
 }
 
-/* Glowing Neon Buttons */
-.btn-neon-cyan {
-  background: linear-gradient(135deg, #00f2fe 0%, #4facfe 100%);
-  color: #030712;
+@keyframes fadeInEntry {
+  from { opacity: 0; transform: translateY(3px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.entry-boss {
+  align-self: flex-end;
+  background: rgba(0, 242, 254, 0.15);
+  border: 1px solid rgba(0, 242, 254, 0.35);
+  color: #e0f2fe;
+  border-bottom-right-radius: 2px;
+}
+
+.entry-bowcon {
+  align-self: flex-start;
+  background: rgba(22, 31, 52, 0.85);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: #f1f5f9;
+  border-bottom-left-radius: 2px;
+}
+
+.entry-sender {
+  font-size: 9.5px;
   font-weight: 700;
-  border-radius: 14px;
-  box-shadow: 0 4px 20px rgba(0, 242, 254, 0.4);
-  transition: all 0.2s ease;
+  text-transform: uppercase;
+  margin-bottom: 2px;
+  font-family: 'JetBrains Mono', monospace;
+  opacity: 0.85;
 }
 
-.btn-neon-cyan:active {
-  transform: scale(0.96);
-  box-shadow: 0 2px 10px rgba(0, 242, 254, 0.6);
+.entry-boss .entry-sender { color: var(--cyan-primary); }
+.entry-bowcon .entry-sender { color: #38bdf8; }
+
+/* Barge-in notification badge */
+.barge-in-badge {
+  align-self: center;
+  background: rgba(244, 63, 94, 0.2);
+  border: 1px solid var(--rose-danger);
+  color: #fecdd3;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 10px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 4px;
 }
 
-.btn-neon-amber {
-  background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);
+/* ==========================================================================
+   4. CENTRAL VOICE CALL BUTTON (FULL-DUPLEX MIC)
+   ========================================================================== */
+.voice-call-wrapper {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin: 4px 0;
+  flex-shrink: 0;
+}
+
+.btn-voice-mic {
+  position: relative;
+  width: 68px;
+  height: 68px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #00f2fe 0%, #0284c7 100%);
   color: #030712;
-  font-weight: 700;
-  border-radius: 14px;
-  box-shadow: 0 4px 20px rgba(245, 158, 11, 0.4);
-  transition: all 0.2s ease;
+  border: 2.5px solid rgba(255, 255, 255, 0.35);
+  box-shadow: 
+    0 0 26px rgba(0, 242, 254, 0.55),
+    0 6px 20px rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.2s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
-.btn-neon-rose {
-  background: linear-gradient(135deg, #f43f5e 0%, #e11d48 100%);
+.btn-voice-mic:active {
+  transform: scale(0.9);
+}
+
+.btn-voice-mic.calling {
+  background: linear-gradient(135deg, #f43f5e 0%, #be123c 100%);
+  box-shadow: 0 0 30px rgba(244, 63, 94, 0.65);
+  border-color: rgba(255, 255, 255, 0.5);
   color: #ffffff;
-  font-weight: 700;
+}
+
+.btn-voice-mic.calling::before {
+  content: '';
+  position: absolute;
+  inset: -6px;
+  border-radius: 50%;
+  border: 2px solid var(--rose-danger);
+  animation: micPulseWave 1.6s infinite ease-out;
+}
+
+@keyframes micPulseWave {
+  0% { transform: scale(0.95); opacity: 0.9; }
+  100% { transform: scale(1.35); opacity: 0; }
+}
+
+.voice-hint-text {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-family: 'JetBrains Mono', monospace;
+}
+
+/* ==========================================================================
+   5. 4 PHÍM TẮT ĐẠI QUẢN GIA (2x2 COMPACT GRID)
+   ========================================================================== */
+.butler-shortcuts-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 9px;
+  width: 100%;
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.shortcut-btn {
+  background: var(--bg-card);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid var(--border-glass);
   border-radius: 14px;
-  box-shadow: 0 4px 20px rgba(244, 63, 94, 0.4);
+  padding: 10px 11px;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  cursor: pointer;
+  text-align: left;
+  transition: all 0.2s ease;
+  position: relative;
+  overflow: hidden;
+}
+
+.shortcut-btn:active {
+  transform: scale(0.96);
+  border-color: var(--cyan-primary);
+  background: rgba(0, 242, 254, 0.12);
+}
+
+.shortcut-icon-box {
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.box-amber { background: rgba(245, 158, 11, 0.18); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.35); }
+.box-cyan { background: rgba(0, 242, 254, 0.18); color: var(--cyan-primary); border: 1px solid rgba(0, 242, 254, 0.35); }
+.box-blue { background: rgba(59, 130, 246, 0.18); color: #60a5fa; border: 1px solid rgba(59, 130, 246, 0.35); }
+.box-emerald { background: rgba(16, 185, 129, 0.18); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.35); }
+
+.shortcut-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.shortcut-title {
+  font-size: 11.5px;
+  font-weight: 700;
+  color: var(--text-white);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.shortcut-desc {
+  font-size: 9.5px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-top: 1px;
+}
+
+/* ==========================================================================
+   MODALS (POPUP SETTINGS, SCREENSHOT, BRIEFING, TELEMETRY)
+   ========================================================================== */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  background: rgba(2, 4, 8, 0.88);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 18px;
+  animation: modalIn 0.2s ease-out;
+}
+
+@keyframes modalIn {
+  from { opacity: 0; transform: scale(0.97); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+.modal-content-card {
+  width: 100%;
+  max-width: 400px;
+  background: #0b111e;
+  border: 1px solid var(--border-cyan);
+  border-radius: 20px;
+  padding: 18px;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.7), 0 0 24px rgba(0, 242, 254, 0.15);
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  max-height: 82vh;
+  overflow-y: auto;
+}
+
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 14px;
+}
+
+.modal-header h3 {
+  font-size: 14.5px;
+  font-weight: 800;
+  color: var(--text-white);
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.btn-close-modal {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid var(--border-glass);
+  color: var(--text-muted);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
+.btn-close-modal:active {
+  color: var(--text-white);
+  background: rgba(255, 255, 255, 0.15);
+}
+
+.modal-input {
+  width: 100%;
+  background: #050811;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 12px;
+  padding: 10px 12px;
+  font-size: 12.5px;
+  color: var(--text-white);
+  font-family: 'JetBrains Mono', monospace;
+  outline: none;
+}
+
+.modal-input:focus {
+  border-color: var(--cyan-primary);
+  box-shadow: 0 0 10px rgba(0, 242, 254, 0.25);
+}
+
+.btn-action-primary {
+  width: 100%;
+  padding: 10px 14px;
+  border-radius: 12px;
+  background: linear-gradient(135deg, #00f2fe 0%, #0284c7 100%);
+  color: #030712;
+  font-size: 12px;
+  font-weight: 700;
+  border: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  box-shadow: 0 4px 14px rgba(0, 242, 254, 0.3);
   transition: all 0.2s ease;
 }
 
-/* Eyelid Blink Animation */
-@keyframes oledBlink {
-  0%, 90%, 100% {
-    transform: scaleY(1);
-  }
-  95% {
-    transform: scaleY(0.08);
-  }
+.btn-action-primary:active {
+  transform: scale(0.97);
 }
 
-.oled-eye {
-  animation: oledBlink 4s infinite ease-in-out;
-  transform-origin: center;
+.btn-action-secondary {
+  flex: 1;
+  padding: 8px 12px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--border-glass);
+  color: var(--text-lead);
+  font-size: 11.5px;
+  font-weight: 600;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  transition: all 0.2s ease;
 }
 
-/* Subtle Scrollbar */
-::-webkit-scrollbar {
-  width: 4px;
+.btn-action-secondary:active {
+  background: rgba(0, 242, 254, 0.15);
+  border-color: var(--cyan-primary);
+  transform: scale(0.97);
 }
-::-webkit-scrollbar-track {
-  background: transparent;
+
+.modal-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 14px;
 }
-::-webkit-scrollbar-thumb {
-  background: rgba(0, 242, 254, 0.2);
-  border-radius: 4px;
+
+.screenshot-preview-wrapper {
+  width: 100%;
+  border-radius: 12px;
+  border: 1px solid var(--border-cyan);
+  overflow: hidden;
+  background: #030508;
+  margin: 10px 0;
+}
+
+.screenshot-preview-img {
+  width: 100%;
+  height: auto;
+  display: block;
+  object-fit: contain;
+}
+
+/* Toast alert notification */
+.butler-toast {
+  position: fixed;
+  top: calc(var(--safe-top) + 52px);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 55;
+  background: rgba(14, 21, 35, 0.96);
+  border: 1.5px solid var(--cyan-primary);
+  color: #ffffff;
+  padding: 7px 14px;
+  border-radius: 18px;
+  font-size: 11.5px;
+  font-weight: 600;
+  box-shadow: 0 8px 24px rgba(0, 242, 254, 0.35);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  pointer-events: none;
+  white-space: nowrap;
+  animation: toastPop 0.25s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+@keyframes toastPop {
+  from { opacity: 0; transform: translate(-50%, -8px) scale(0.92); }
+  to { opacity: 1; transform: translate(-50%, 0) scale(1); }
 }

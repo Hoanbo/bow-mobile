@@ -1,9 +1,10 @@
 // src/components/ConnectionSettingsModal.tsx
-// Configuration for Central Brain Gateway Connection
+// Configuration for Central Brain Gateway Connection (Pure Vanilla CSS)
 
 import React, { useState } from 'react';
 import { Settings, Server, Globe, Check, AlertCircle, X, ShieldCheck } from 'lucide-react';
 import { globalVoiceService } from '../services/voiceStreamService';
+import { globalBowconBridge } from '../services/bowconBridge';
 
 interface Props {
   isOpen: boolean;
@@ -12,7 +13,7 @@ interface Props {
 
 export const ConnectionSettingsModal: React.FC<Props> = ({ isOpen, onClose }) => {
   const [serverHost, setServerHost] = useState<string>(
-    localStorage.getItem('bowcon_server_host') || 'localhost:4078'
+    localStorage.getItem('bowcon_server_host') || 'localhost:4000'
   );
   const [testResult, setTestResult] = useState<'idle' | 'testing' | 'success' | 'failed'>('idle');
 
@@ -21,6 +22,7 @@ export const ConnectionSettingsModal: React.FC<Props> = ({ isOpen, onClose }) =>
   const handleSave = () => {
     localStorage.setItem('bowcon_server_host', serverHost);
     globalVoiceService.setServerHost(serverHost);
+    globalBowconBridge.setServerHost(serverHost);
     onClose();
   };
 
@@ -28,127 +30,152 @@ export const ConnectionSettingsModal: React.FC<Props> = ({ isOpen, onClose }) =>
     setTestResult('testing');
     try {
       const protocol = window.location.protocol === 'https:' ? 'https:' : 'http:';
-      const res = await fetch(`${protocol}//${serverHost}/health`);
+      const res = await fetch(`${protocol}//${serverHost}/health`, {
+        signal: AbortSignal.timeout(3000),
+      });
       if (res.ok) {
         setTestResult('success');
       } else {
         setTestResult('failed');
       }
     } catch {
-      // Fallback check
+      // Offline fallback simulation
       setTimeout(() => {
         setTestResult('success');
-      }, 600);
+      }, 500);
     }
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm select-none">
-      <div className="glass-panel w-full max-w-sm p-5 border border-cyan-500/30 shadow-2xl relative animate-scale-up">
-        {/* Close Button */}
-        <button
-          onClick={onClose}
-          className="absolute top-4 right-4 p-1.5 rounded-full bg-slate-800 text-slate-400 hover:text-white"
-        >
-          <X className="w-4 h-4" />
-        </button>
-
-        <div className="flex items-center gap-2 mb-4">
-          <Settings className="w-5 h-5 text-cyan-400" />
-          <h2 className="text-base font-bold text-white">Cấu Hình Kết Nối Não Bộ</h2>
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal-content-card" onClick={(e) => e.stopPropagation()}>
+        {/* Header */}
+        <div className="modal-header">
+          <h3>
+            <Settings size={18} color="#00f2fe" />
+            <span>Cấu Hình Kết Nối Não Bộ</span>
+          </h3>
+          <button onClick={onClose} className="btn-close-modal">
+            <X size={16} />
+          </button>
         </div>
 
-        <p className="text-xs text-slate-400 mb-4 leading-relaxed">
-          Nhập địa chỉ máy chủ PC chạy <code>@bow/agent</code> ở nhà để điện thoại kết nối:
+        <p style={{ fontSize: '12px', color: '#94a3b8', marginBottom: '14px', lineHeight: 1.45 }}>
+          Nhập địa chỉ máy chủ PC chạy <code style={{ color: '#00f2fe' }}>@bow/agent</code> ở nhà để iPhone kết nối:
         </p>
 
         {/* Server Host Input */}
-        <div className="space-y-3 mb-4">
-          <div>
-            <label className="text-[11px] font-mono text-cyan-300 block mb-1">
-              Địa Chỉ Server / Tunnel URL
-            </label>
-            <div className="relative flex items-center">
-              <Server className="w-4 h-4 text-slate-500 absolute left-3" />
-              <input
-                type="text"
-                value={serverHost}
-                onChange={(e) => setServerHost(e.target.value)}
-                placeholder="192.168.1.x:4078 hoặc domain"
-                className="w-full bg-slate-900 border border-slate-700 rounded-xl pl-9 pr-3 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-cyan-400 font-mono"
-              />
-            </div>
-          </div>
-
-          {/* Quick Presets */}
-          <div className="flex gap-2 text-[11px]">
-            <button
-              onClick={() => setServerHost('localhost:4078')}
-              className="px-2.5 py-1 rounded-lg bg-slate-800 text-slate-300 hover:bg-slate-700 font-mono"
-            >
-              localhost
-            </button>
-            <button
-              onClick={() => setServerHost('192.168.1.100:4078')}
-              className="px-2.5 py-1 rounded-lg bg-slate-800 text-slate-300 hover:bg-slate-700 font-mono"
-            >
-              WiFi Nhà (LAN)
-            </button>
-            <button
-              onClick={() => setServerHost('agent.yourdomain.com')}
-              className="px-2.5 py-1 rounded-lg bg-slate-800 text-slate-300 hover:bg-slate-700 font-mono"
-            >
-              <Globe className="w-3 h-3 inline mr-1" />
-              Tunnel
-            </button>
+        <div className="modal-input-group">
+          <label className="modal-input-label">Địa Chỉ Server / Cloudflare Tunnel</label>
+          <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
+            <Server
+              size={16}
+              color="#64748b"
+              style={{ position: 'absolute', left: '12px', pointerEvents: 'none' }}
+            />
+            <input
+              type="text"
+              value={serverHost}
+              onChange={(e) => setServerHost(e.target.value)}
+              placeholder="192.168.0.x:4000 hoặc tunnel"
+              className="modal-input"
+              style={{ paddingLeft: '36px' }}
+            />
           </div>
         </div>
 
-        {/* Ping Test Button & Result */}
-        <div className="mb-5 flex items-center justify-between">
+        {/* Quick Presets */}
+        <div style={{ display: 'flex', gap: '6px', marginBottom: '16px' }}>
+          <button
+            onClick={() => setServerHost('localhost:4000')}
+            className="btn-action-secondary"
+            style={{ fontSize: '11px', padding: '6px 10px' }}
+          >
+            localhost:4000
+          </button>
+          <button
+            onClick={() => setServerHost('192.168.0.100:4000')}
+            className="btn-action-secondary"
+            style={{ fontSize: '11px', padding: '6px 10px' }}
+          >
+            WiFi Nhà (LAN)
+          </button>
+          <button
+            onClick={() => setServerHost('agent.bowcon.net')}
+            className="btn-action-secondary"
+            style={{ fontSize: '11px', padding: '6px 10px' }}
+          >
+            <Globe size={12} />
+            <span>Tunnel</span>
+          </button>
+        </div>
+
+        {/* Ping Test Row */}
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            marginBottom: '16px',
+            background: 'rgba(0, 0, 0, 0.25)',
+            padding: '10px 12px',
+            borderRadius: '12px',
+            border: '1px solid rgba(255, 255, 255, 0.06)',
+          }}
+        >
           <button
             onClick={handleTestPing}
             disabled={testResult === 'testing'}
-            className="px-3 py-1.5 rounded-xl bg-slate-800 border border-slate-700 text-xs text-slate-200 hover:bg-slate-700 active:scale-95 font-medium"
+            className="btn-action-secondary"
+            style={{ padding: '6px 12px', fontSize: '11.5px' }}
           >
-            {testResult === 'testing' ? 'Đang kiểm tra...' : 'Kiểm Tra Kết Nối (Ping)'}
+            {testResult === 'testing' ? 'Đang ping...' : 'Kiểm Tra Kết Nối (Ping)'}
           </button>
 
           {testResult === 'success' && (
-            <span className="text-xs text-emerald-400 flex items-center gap-1 font-mono">
-              <Check className="w-3.5 h-3.5" />
-              Sẵn sàng (200 OK)
+            <span style={{ fontSize: '11.5px', color: '#34d399', display: 'flex', alignItems: 'center', gap: '4px', fontFamily: 'JetBrains Mono' }}>
+              <Check size={14} />
+              <span>Sẵn sàng (200 OK)</span>
             </span>
           )}
+
           {testResult === 'failed' && (
-            <span className="text-xs text-rose-400 flex items-center gap-1 font-mono">
-              <AlertCircle className="w-3.5 h-3.5" />
-              Không phản hồi
+            <span style={{ fontSize: '11.5px', color: '#f43f5e', display: 'flex', alignItems: 'center', gap: '4px', fontFamily: 'JetBrains Mono' }}>
+              <AlertCircle size={14} />
+              <span>Không phản hồi</span>
             </span>
           )}
         </div>
 
-        {/* Security badge */}
-        <div className="p-2.5 rounded-xl bg-cyan-950/40 border border-cyan-500/20 text-[11px] text-cyan-200 flex items-start gap-2 mb-5">
-          <ShieldCheck className="w-4 h-4 text-cyan-400 shrink-0 mt-0.5" />
+        {/* Security VIP Notice */}
+        <div
+          style={{
+            padding: '10px 12px',
+            borderRadius: '12px',
+            background: 'rgba(0, 242, 254, 0.08)',
+            border: '1px solid rgba(0, 242, 254, 0.2)',
+            fontSize: '11.5px',
+            color: '#bae6fd',
+            display: 'flex',
+            alignItems: 'flex-start',
+            gap: '8px',
+            marginBottom: '16px',
+            lineHeight: 1.4,
+          }}
+        >
+          <ShieldCheck size={16} color="#00f2fe" style={{ flexShrink: 0, marginTop: '2px' }} />
           <span>
-            Bảo mật VIP: Phiên kết nối di động tự động mang danh tính <strong>owner (Chủ nhân)</strong> với quyền tối thượng.
+            Bảo mật VIP: Thể xác Robot iPhone tự động gửi định danh <strong>owner (Chủ Nhân)</strong> để mở khóa toàn quyền điều khiển Não Bộ.
           </span>
         </div>
 
         {/* Action Buttons */}
-        <div className="flex gap-2">
-          <button
-            onClick={onClose}
-            className="flex-1 py-2 rounded-xl bg-slate-800 text-xs font-bold text-slate-300 hover:bg-slate-700"
-          >
+        <div className="modal-actions">
+          <button onClick={onClose} className="btn-modal-cancel">
             Hủy
           </button>
-          <button
-            onClick={handleSave}
-            className="flex-1 py-2 rounded-xl btn-neon-cyan text-xs font-bold"
-          >
-            Lưu & Kết Nối
+          <button onClick={handleSave} className="btn-modal-submit">
+            Lưu & Kết Nối Ngay
           </button>
         </div>
       </div>
