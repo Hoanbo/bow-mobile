@@ -22,8 +22,8 @@ interface LogEntry {
 }
 
 export default function App() {
-  const [serverUrl, setServerUrl] = useState('ws://100.122.26.119:4000/ws/body');
-  const [psk, setPsk] = useState('xcycy79QMbeWsYATXJOJCGbrd6cjSyDjb9RkLbqjfXE');
+  const [serverUrl, setServerUrl] = useState(process.env.EXPO_PUBLIC_BRAIN_URL || 'ws://100.122.26.119:4000/ws/body');
+  const [psk, setPsk] = useState(process.env.EXPO_PUBLIC_BODY_PSK || 'xcycy79QMbeWsYATXJOJCGbrd6cjSyDjb9RkLbqjfXE');
   const [bodyId, setBodyId] = useState('iphone-mobile-v1');
   const [status, setStatus] = useState<ConnectionStatus>('DISCONNECTED');
   const [logs, setLogs] = useState<LogEntry[]>([]);
