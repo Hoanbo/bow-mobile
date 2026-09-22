@@ -15,17 +15,19 @@ import {
   Alert,
 } from 'react-native';
 import {
-  AudioRecorder,
-  RecordingPresets,
+  IOSOutputFormat,
+  AudioQuality,
   requestRecordingPermissionsAsync,
   setAudioModeAsync,
   createAudioPlayer,
+  useAudioRecorder,
   type AudioPlayer,
+  type RecordingOptions,
 } from 'expo-audio';
-import * as FileSystem from 'expo-file-system';
+import * as FileSystem from 'expo-file-system/legacy';
 
-type ConnectionStatus = 'DISCONNECTED' | 'CONNECTING' | 'CONNECTED' | 'REGISTERED' | 'ERROR';
-type VoiceStage = 'IDLE' | 'RECORDING' | 'THINKING' | 'SPEAKING';
+type ConnectionStatus = 'DISCONNECTED' | 'CONNECTING' | 'IDLE' | 'ERROR';
+type VoiceStage = 'IDLE' | 'RECORDING' | 'SENDING' | 'WAITING' | 'PLAYING';
 
 interface LogEntry {
   id: string;
@@ -33,6 +35,32 @@ interface LogEntry {
   type: 'TX' | 'RX' | 'SYS' | 'ERR';
   text: string;
 }
+
+const PTT_RECORDING_OPTIONS: RecordingOptions = {
+  extension: '.wav',
+  sampleRate: 16000,
+  numberOfChannels: 1,
+  bitRate: 256000,
+  android: {
+    extension: '.wav',
+    outputFormat: 'wav' as any,
+    audioEncoder: 'default' as any,
+    sampleRate: 16000,
+  },
+  ios: {
+    extension: '.wav',
+    outputFormat: IOSOutputFormat.LINEARPCM,
+    audioQuality: AudioQuality.HIGH,
+    sampleRate: 16000,
+    linearPCMBitDepth: 16,
+    linearPCMIsBigEndian: false,
+    linearPCMIsFloat: false,
+  },
+  web: {
+    mimeType: 'audio/wav',
+    bitsPerSecond: 256000,
+  },
+};
 
 export default function App() {
   const [serverUrl, setServerUrl] = useState(
@@ -43,19 +71,37 @@ export default function App() {
   );
   const [bodyId, setBodyId] = useState('iphone-mobile-v1');
   const [status, setStatus] = useState<ConnectionStatus>('DISCONNECTED');
-  const [voiceStage, setVoiceStage] = useState<VoiceStage>('IDLE');
+  const [voiceStage, setVoiceStageState] = useState<VoiceStage>('IDLE');
   const [userTranscript, setUserTranscript] = useState<string>('');
   const [brainResponse, setBrainResponse] = useState<string>('');
   const [latencyMs, setLatencyMs] = useState<number | null>(null);
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [showConfig, setShowConfig] = useState<boolean>(false);
 
+  const voiceStageRef = useRef<VoiceStage>('IDLE');
+  const setVoiceStage = (stage: VoiceStage) => {
+    voiceStageRef.current = stage;
+    setVoiceStageState(stage);
+  };
+
   const wsRef = useRef<WebSocket | null>(null);
   const heartbeatTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const recorderRef = useRef<AudioRecorder | null>(null);
+  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const reconnectAttemptRef = useRef<number>(0);
+  const isManualDisconnectRef = useRef<boolean>(false);
+
+  const sessionIdRef = useRef<string>(
+    'session_mobile_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6)
+  );
   const playerRef = useRef<AudioPlayer | null>(null);
+  const maxRecordingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const waitingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   const pulseAnim = useRef(new Animated.Value(1)).current;
   const scrollViewRef = useRef<ScrollView | null>(null);
+
+  // Expo-audio recorder hook
+  const recorder = useAudioRecorder(PTT_RECORDING_OPTIONS);
 
   const addLog = (type: LogEntry['type'], text: string) => {
     const time = new Date().toLocaleTimeString('en-GB', { hour12: false });
@@ -65,7 +111,7 @@ export default function App() {
 
   const clearLogs = () => setLogs([]);
 
-  // Setup Audio Mode on mount
+  // Initialize Audio Session on mount
   useEffect(() => {
     (async () => {
       try {
@@ -76,33 +122,38 @@ export default function App() {
           interruptionMode: 'mixWithOthers',
         });
       } catch (err: any) {
-        addLog('ERR', `Audio mode setup error: ${err.message || String(err)}`);
+        addLog('ERR', 'Audio mode setup error: ' + (err.message || String(err)));
       }
     })();
 
     return () => {
       stopHeartbeat();
+      stopReconnectTimer();
+      clearWaitingTimeout();
+      clearMaxRecordingTimer();
       if (wsRef.current) wsRef.current.close();
       if (playerRef.current) {
-        try { playerRef.current.release(); } catch {}
+        try {
+          playerRef.current.release();
+        } catch {}
       }
     };
   }, []);
 
-  // Pulsing animation for PTT button
+  // PTT pulse animation
   useEffect(() => {
     if (voiceStage === 'RECORDING') {
       Animated.loop(
         Animated.sequence([
           Animated.timing(pulseAnim, {
-            toValue: 1.18,
-            duration: 400,
+            toValue: 1.15,
+            duration: 350,
             easing: Easing.inOut(Easing.ease),
             useNativeDriver: true,
           }),
           Animated.timing(pulseAnim, {
             toValue: 1.0,
-            duration: 400,
+            duration: 350,
             easing: Easing.inOut(Easing.ease),
             useNativeDriver: true,
           }),
@@ -130,15 +181,52 @@ export default function App() {
           timestamp: Date.now(),
         };
         ws.send(JSON.stringify(hbMsg));
-        addLog('TX', `Heartbeat sent (bodyId: ${bodyId.trim()})`);
+        addLog('TX', 'Heartbeat sent (bodyId: ' + bodyId.trim() + ')');
       }
     }, 10000);
   };
 
-  // Play incoming Base64 WAV audio through iPhone speaker
+  const stopReconnectTimer = () => {
+    if (reconnectTimerRef.current) {
+      clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = null;
+    }
+  };
+
+  const scheduleAutoReconnect = () => {
+    if (isManualDisconnectRef.current) return;
+    stopReconnectTimer();
+    const attempt = reconnectAttemptRef.current;
+    // Exponential backoff: min(8 * 2^n, 60)s
+    const delaySec = Math.min(8 * Math.pow(2, attempt), 60);
+    reconnectAttemptRef.current += 1;
+    addLog(
+      'SYS',
+      'Auto-reconnect attempt #' + reconnectAttemptRef.current + ' scheduled in ' + delaySec + 's...'
+    );
+    reconnectTimerRef.current = setTimeout(() => {
+      connect();
+    }, delaySec * 1000);
+  };
+
+  const clearWaitingTimeout = () => {
+    if (waitingTimeoutRef.current) {
+      clearTimeout(waitingTimeoutRef.current);
+      waitingTimeoutRef.current = null;
+    }
+  };
+
+  const clearMaxRecordingTimer = () => {
+    if (maxRecordingTimerRef.current) {
+      clearTimeout(maxRecordingTimerRef.current);
+      maxRecordingTimerRef.current = null;
+    }
+  };
+
+  // Play audio Base64 PCM WAV from Piper TTS through iPhone speaker
   const playAudioBase64 = async (base64Data: string, onDone?: () => void) => {
     try {
-      setVoiceStage('SPEAKING');
+      setVoiceStage('PLAYING');
       if (playerRef.current) {
         try {
           playerRef.current.pause();
@@ -147,7 +235,7 @@ export default function App() {
         playerRef.current = null;
       }
 
-      const tempFileUri = `${FileSystem.cacheDirectory}incoming_voice_${Date.now()}.wav`;
+      const tempFileUri = (FileSystem.cacheDirectory || '') + 'incoming_voice_' + Date.now() + '.wav';
       await FileSystem.writeAsStringAsync(tempFileUri, base64Data, {
         encoding: FileSystem.EncodingType.Base64,
       });
@@ -155,30 +243,27 @@ export default function App() {
       const player = createAudioPlayer({ uri: tempFileUri });
       playerRef.current = player;
 
-      player.addListener('playbackStatusUpdate', (playbackStatus) => {
+      player.addListener('playbackStatusUpdate', (playbackStatus: any) => {
         if (playbackStatus.isLoaded && playbackStatus.didJustFinish) {
           setVoiceStage('IDLE');
-          try { player.release(); } catch {}
+          try {
+            player.release();
+          } catch {}
           FileSystem.deleteAsync(tempFileUri, { idempotent: true }).catch(() => {});
           if (onDone) onDone();
         }
       });
 
       player.play();
-      addLog('SYS', '?? �ang ph�t audio gi?ng Duy Oryx ra loa iPhone...');
+      addLog('SYS', 'Playing Duy Oryx audio (22.05kHz WAV) through iPhone speaker...');
     } catch (err: any) {
-      addLog('ERR', `Playback error: ${err.message || String(err)}`);
+      addLog('ERR', 'Playback error: ' + (err.message || String(err)));
       setVoiceStage('IDLE');
       if (onDone) onDone();
     }
   };
 
-  const handleConnect = () => {
-    if (status === 'CONNECTING' || status === 'CONNECTED' || status === 'REGISTERED') {
-      disconnect();
-      return;
-    }
-
+  const connect = () => {
     let url = serverUrl.trim();
     const token = psk.trim();
     if (!url) {
@@ -187,335 +272,398 @@ export default function App() {
     }
 
     if (token) {
-      const separator = url.includes('?') ? '&' : '?';
-      url = `${url}${separator}token=${encodeURIComponent(token)}`;
+      const delimiter = url.includes('?') ? '&' : '?';
+      url = url + delimiter + 'token=' + encodeURIComponent(token);
     }
 
-    addLog('SYS', `Connecting to ${serverUrl.trim()}...`);
+    isManualDisconnectRef.current = false;
+    stopReconnectTimer();
+    stopHeartbeat();
+    clearWaitingTimeout();
+    clearMaxRecordingTimer();
+
     setStatus('CONNECTING');
+    setVoiceStage('IDLE');
+    addLog('SYS', 'Initiating WebSocket connection to: ' + url.split('?')[0]);
 
     try {
-      const ws = new (WebSocket as any)(url, [], {
-        headers: {
-          Authorization: `Bearer ${token}`,
-        },
-      });
+      const ws = new WebSocket(url);
       wsRef.current = ws;
 
       ws.onopen = () => {
-        addLog('SYS', 'WebSocket connection established (OPEN)');
-        setStatus('CONNECTED');
-
-        // Dynamic Capabilities: Advertise Audio capabilities
+        addLog('SYS', 'WebSocket connected. Sending body.advertise handshake...');
         const advertiseMsg = {
           type: 'body.advertise',
-          advertisement: {
-            bodyId: bodyId.trim(),
-            bodyType: 'mobile',
-            name: 'iPhone 14 Pro Mobile Body',
-            capabilities: [
-              {
-                name: 'audio.play',
-                description: 'Ph�t �m thanh t?ng h?p WAV ra loa ngo�i iPhone',
-                riskLevel: 'low',
-                parameters: {
-                  type: 'object',
-                  properties: {
-                    audioBase64: { type: 'string', description: 'Base64 encoded audio' },
-                    format: { type: 'string', description: 'wav or mp3' },
-                  },
-                  required: ['audioBase64'],
-                },
-              },
-              {
-                name: 'audio.capture',
-                description: 'Thu �m microphone t? iPhone',
-                riskLevel: 'medium',
-                parameters: {
-                  type: 'object',
-                  properties: {
-                    durationMs: { type: 'number', description: 'Th?i l�?ng thu �m (ms)' },
-                  },
-                },
-              },
-              {
-                name: 'audio.status',
-                description: 'Ki?m tra tr?ng th�i driver �m thanh iPhone',
-                riskLevel: 'low',
-              },
-            ],
+          bodyId: bodyId.trim(),
+          capabilities: ['screen', 'camera', 'gps', 'speaker', 'mic', 'audio_duyoryx'],
+          device: {
+            platform: Platform.OS,
+            version: Platform.Version,
+            client: 'bow-mobile',
+            transport: 'tailscale_wireguard',
+            audioSupport: {
+              sttInput: '16kHz_1ch_16bit_wav',
+              ttsOutput: '22.05kHz_1ch_16bit_wav_duyoryx',
+            },
           },
         };
-        const payloadStr = JSON.stringify(advertiseMsg);
-        ws.send(payloadStr);
-        addLog('TX', `body.advertise -> (3 Audio Capabilities advertised)`);
-
-        startHeartbeat(ws);
+        ws.send(JSON.stringify(advertiseMsg));
+        addLog('TX', 'body.advertise sent -> waiting for Brain confirmation');
       };
 
-      ws.onmessage = async (event: any) => {
+      ws.onmessage = (event) => {
         try {
-          const raw = typeof event.data === 'string' ? event.data : '<binary data>';
-          const parsed = JSON.parse(event.data);
+          const msg = JSON.parse(event.data);
+          addLog('RX', 'Received: [' + msg.type + ']');
 
-          if (parsed.type === 'body.advertise_ack') {
-            if (parsed.status === 'REGISTERED') {
-              setStatus('REGISTERED');
-              addLog('SYS', `? Brain BodyRegistry: REGISTERED (id: ${parsed.bodyId})`);
+          if (msg.type === 'body.registered') {
+            setStatus('IDLE');
+            reconnectAttemptRef.current = 0;
+            addLog(
+              'SYS',
+              'Brain REGISTERED Body successfully! (Body ID: ' +
+                msg.bodyId +
+                ', Status: ' +
+                msg.status +
+                ')'
+            );
+            startHeartbeat(ws);
+          } else if (msg.type === 'voice.roundtrip_result') {
+            clearWaitingTimeout();
+            const totalMs = msg.totalDurationMs || 0;
+            setLatencyMs(totalMs);
+
+            if (msg.success) {
+              const uText = msg.userText || '(không có giọng nói)';
+              const rText = msg.responseText || '(không có phản hồi)';
+              setUserTranscript(uText);
+              setBrainResponse(rText);
+
+              addLog('RX', 'STT User: "' + uText + '"');
+              addLog('RX', 'Brain Response (' + totalMs + 'ms): "' + rText + '"');
+
+              if (msg.speechAudioBase64) {
+                playAudioBase64(msg.speechAudioBase64);
+              } else {
+                setVoiceStage('IDLE');
+              }
             } else {
-              addLog('ERR', `Registration rejected: ${parsed.status || 'UNKNOWN'}`);
-              setStatus('ERROR');
+              setVoiceStage('IDLE');
+              const errStage = msg.stageAtError || 'UNKNOWN';
+              const errDetails = msg.error || 'Voice roundtrip failed at Brain';
+              addLog('ERR', 'Voice Roundtrip Failed at [' + errStage + ']: ' + errDetails);
+              Alert.alert('Lỗi xử lý Voice', '[' + errStage + ']: ' + errDetails);
             }
-          } else if (parsed.type === 'body.command') {
-            const cmd = parsed.command;
-            addLog('RX', `[COMMAND] ${cmd.capability} (id: ${cmd.commandId})`);
-
-            if (cmd.capability === 'audio.play') {
-              const audioBase64 = cmd.params?.audioBase64 || cmd.parameters?.audioBase64;
-              if (audioBase64) {
-                const tStart = Date.now();
-                await playAudioBase64(audioBase64, () => {
-                  const execDurationMs = Date.now() - tStart;
-                  const resMsg = {
-                    type: 'body.command_result',
-                    result: {
-                      commandId: cmd.commandId,
-                      bodyId: bodyId.trim(),
-                      success: true,
-                      executionDurationMs: execDurationMs,
-                      data: { played: true },
-                    },
-                  };
-                  ws.send(JSON.stringify(resMsg));
-                  addLog('TX', `body.command_result (success, ${execDurationMs}ms)`);
-                });
-              }
-            } else if (cmd.capability === 'audio.status') {
-              const resMsg = {
-                type: 'body.command_result',
-                result: {
-                  commandId: cmd.commandId,
-                  bodyId: bodyId.trim(),
-                  success: true,
-                  executionDurationMs: 5,
-                  data: {
-                    status: 'HEALTHY',
-                    device: 'iPhone Microphone / Speaker',
-                    platform: Platform.OS,
-                  },
-                },
-              };
-              ws.send(JSON.stringify(resMsg));
-              addLog('TX', `body.command_result -> audio.status (HEALTHY)`);
-            }
-          } else if (parsed.type === 'voice.audition_result') {
-            addLog('RX', `[AUDITION] Piper TTS Duy Oryx received (${parsed.latencyMs}ms)`);
-            setBrainResponse(parsed.text || 'Audition sample');
-            setLatencyMs(parsed.latencyMs);
-            if (parsed.audioBase64) {
-              await playAudioBase64(parsed.audioBase64);
-            }
-          } else if (parsed.type === 'voice.roundtrip_result') {
-            setVoiceStage('IDLE');
-            setUserTranscript(parsed.userText || '');
-            setBrainResponse(parsed.responseText || '');
-            setLatencyMs(parsed.totalDurationMs || null);
-            addLog('RX', `[ROUNDTRIP] User: "${parsed.userText}" -> Brain: "${parsed.responseText}" (${parsed.totalDurationMs}ms)`);
-            if (parsed.audioPlayback || parsed.audioBase64) {
-              if (parsed.audioBase64) {
-                await playAudioBase64(parsed.audioBase64);
-              }
-            }
-          } else if (parsed.type === 'body.heartbeat_ack') {
-            // Heartbeat OK
-          } else {
-            addLog('RX', raw.length > 100 ? raw.slice(0, 100) + '...' : raw);
+          } else if (msg.type === 'system.error' || msg.type === 'error') {
+            addLog('ERR', 'Brain error message: ' + (msg.message || JSON.stringify(msg)));
           }
         } catch (e: any) {
-          addLog('RX', `Raw: ${String(event.data).slice(0, 80)}`);
+          addLog('ERR', 'Malformed JSON received: ' + event.data.substring(0, 100));
         }
       };
 
       ws.onerror = (e: any) => {
-        addLog('ERR', `WebSocket Error: ${e.message || 'Connection failed'}`);
+        addLog('ERR', 'WebSocket Error: ' + (e.message || 'Connection failed'));
         setStatus('ERROR');
         setVoiceStage('IDLE');
+        clearWaitingTimeout();
       };
 
       ws.onclose = (e: any) => {
         stopHeartbeat();
+        clearWaitingTimeout();
+        clearMaxRecordingTimer();
         setStatus('DISCONNECTED');
         setVoiceStage('IDLE');
-        addLog('SYS', `WebSocket closed (code: ${e.code}, reason: ${e.reason || 'normal'})`);
+        addLog(
+          'SYS',
+          'WebSocket closed (code: ' + e.code + ', reason: ' + (e.reason || 'normal') + ')'
+        );
         wsRef.current = null;
+        scheduleAutoReconnect();
       };
     } catch (err: any) {
-      addLog('ERR', `Connect exception: ${err.message || String(err)}`);
+      addLog('ERR', 'Connect exception: ' + (err.message || String(err)));
       setStatus('ERROR');
+      scheduleAutoReconnect();
     }
   };
 
-  const disconnect = () => {
-    stopHeartbeat();
-    if (wsRef.current) {
-      wsRef.current.close(1000, 'User disconnected');
-      wsRef.current = null;
+  const handleToggleConnect = () => {
+    if (status === 'IDLE' || status === 'CONNECTING') {
+      isManualDisconnectRef.current = true;
+      stopReconnectTimer();
+      stopHeartbeat();
+      clearWaitingTimeout();
+      clearMaxRecordingTimer();
+      if (wsRef.current) {
+        wsRef.current.close(1000, 'User disconnected');
+        wsRef.current = null;
+      }
+      setStatus('DISCONNECTED');
+      setVoiceStage('IDLE');
+      addLog('SYS', 'Disconnected by user');
+    } else {
+      reconnectAttemptRef.current = 0;
+      connect();
     }
-    setStatus('DISCONNECTED');
-    setVoiceStage('IDLE');
-    addLog('SYS', 'Disconnected by user');
   };
 
   // Push-to-Talk: Start Recording (Press In)
   const startRecording = async () => {
-    if (status !== 'REGISTERED') {
-      Alert.alert('Ch�a k?t n?i Brain', 'Vui l?ng nh?n "Connect" tr�?c khi s? d?ng PTT.');
+    if (status !== 'IDLE') {
+      Alert.alert('Chưa kết nối Brain', 'Vui lòng kết nối Brain trước khi sử dụng PTT.');
+      return;
+    }
+    if (
+      voiceStage !== 'IDLE'
+    ) {
       return;
     }
 
     try {
       const permission = await requestRecordingPermissionsAsync();
       if (permission.status !== 'granted') {
-        Alert.alert('C?n c?p quy?n Micro', 'Vui l?ng cho ph�p quy?n truy c?p Microphone trong C�i �?t iPhone.');
+        addLog('ERR', 'Microphone permission denied by user');
+        Alert.alert(
+          'Cần quyền Micro',
+          'Vui lòng cho phép quyền truy cập Microphone trong Cài đặt iPhone.'
+        );
         return;
       }
 
       setVoiceStage('RECORDING');
-      addLog('SYS', '??? PTT B?T �?U: �ang thu �m microphone...');
-
-      const recorder = new AudioRecorder(RecordingPresets.HIGH_QUALITY);
-      await recorder.prepareToRecordAsync();
       recorder.record();
-      recorderRef.current = recorder;
+      addLog('SYS', 'PTT Recording started (16kHz Mono 16-bit PCM WAV)...');
+
+      // 15s Max Limit Timer
+      clearMaxRecordingTimer();
+      maxRecordingTimerRef.current = setTimeout(() => {
+        addLog('SYS', '15s recording limit reached -> Auto-stopping and sending...');
+        stopRecording();
+      }, 15000);
     } catch (err: any) {
-      addLog('ERR', `L?i b?t �?u thu �m: ${err.message || String(err)}`);
+      addLog('ERR', 'Non-network recording error: ' + (err.message || String(err)));
       setVoiceStage('IDLE');
+      clearMaxRecordingTimer();
     }
   };
 
   // Push-to-Talk: Stop Recording & Send to Brain (Press Out)
-  const stopRecordingAndSend = async () => {
-    if (voiceStage !== 'RECORDING') return;
+  const stopRecording = async () => {
+    clearMaxRecordingTimer();
+    if (voiceStageRef.current !== 'RECORDING') return;
 
     try {
-      setVoiceStage('THINKING');
-      addLog('SYS', '? PTT K?T TH�C: �ang g?i audio t?i Brain (Whisper -> Piper)...');
-
-      const recorder = recorderRef.current;
-      if (!recorder) return;
+      setVoiceStage('SENDING');
       await recorder.stop();
-      const uri = recorder.uri;
-      recorderRef.current = null;
 
+      const uri = recorder.uri;
       if (!uri) {
-        addLog('ERR', 'Recording URI r?ng');
+        addLog('ERR', 'No audio recorded URI available');
         setVoiceStage('IDLE');
         return;
       }
 
-      const base64Audio = await FileSystem.readAsStringAsync(uri, {
+      addLog('SYS', 'Reading recorded WAV file: ' + uri);
+      const audioBase64 = await FileSystem.readAsStringAsync(uri, {
         encoding: FileSystem.EncodingType.Base64,
       });
 
-      FileSystem.deleteAsync(uri, { idempotent: true }).catch(() => {});
-
-      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-        const roundtripPayload = {
-          type: 'voice.roundtrip',
-          bodyId: bodyId.trim(),
-          audioBase64: base64Audio,
-          format: 'wav',
-          timestamp: Date.now(),
-        };
-        wsRef.current.send(JSON.stringify(roundtripPayload));
-        addLog('TX', `voice.roundtrip -> (Sent Base64 WAV to Brain)`);
-      } else {
-        addLog('ERR', 'WebSocket kh�ng m? khi g?i audio');
+      if (!audioBase64 || audioBase64.length === 0) {
+        addLog('ERR', 'Recorded audio is empty');
         setVoiceStage('IDLE');
+        return;
       }
+
+      addLog(
+        'SYS',
+        'Audio captured (' +
+          Math.round((audioBase64.length * 3) / 4 / 1024) +
+          ' KB). Uploading to Brain...'
+      );
+
+      if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
+        addLog('ERR', 'WebSocket is disconnected while trying to send audio');
+        setVoiceStage('IDLE');
+        return;
+      }
+
+      const reqId = 'req_voice_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6);
+      const corrId = 'corr_voice_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6);
+
+      const payload = {
+        type: 'voice.roundtrip',
+        requestId: reqId,
+        correlationId: corrId,
+        bodyId: bodyId.trim(),
+        sessionId: sessionIdRef.current,
+        userId: 'boss_user',
+        role: 'owner',
+        isOwner: true,
+        audioBase64: audioBase64,
+      };
+
+      wsRef.current.send(JSON.stringify(payload));
+      setVoiceStage('WAITING');
+      addLog('TX', 'voice.roundtrip sent (STT -> Brain Core -> TTS Duy Oryx 22.05kHz)...');
+
+      // 20s Waiting timeout fallback
+      clearWaitingTimeout();
+      waitingTimeoutRef.current = setTimeout(() => {
+        if (voiceStageRef.current === 'WAITING') {
+          addLog('ERR', 'Voice roundtrip timed out (20s) waiting for Brain response');
+          setVoiceStage('IDLE');
+          Alert.alert('Hết thời gian chờ', 'Brain không phản hồi yêu cầu Voice trong 20 giây.');
+        }
+      }, 20000);
     } catch (err: any) {
-      addLog('ERR', `L?i x? l? audio PTT: ${err.message || String(err)}`);
+      addLog('ERR', 'Stop recording / upload error: ' + (err.message || String(err)));
       setVoiceStage('IDLE');
     }
   };
 
-  // Audition Duy Oryx Voice Sample directly from Brain
-  const handleAuditionDuyOryx = () => {
-    if (status !== 'REGISTERED' || !wsRef.current) {
-      Alert.alert('Ch�a k?t n?i', 'Vui l?ng k?t n?i v?i Brain tr�?c khi audition.');
+  // Audition Voice Test Button (Tests TTS audio pipeline directly)
+  const handleAuditionTest = () => {
+    if (status !== 'IDLE') {
+      Alert.alert('Chưa kết nối Brain', 'Vui lòng kết nối Brain trước khi thử giọng nói Duy Oryx.');
+      return;
+    }
+    if (voiceStageRef.current !== 'IDLE') {
       return;
     }
 
-    setVoiceStage('THINKING');
-    addLog('SYS', '? �ang y�u c?u Brain t?ng h?p m?u gi?ng Duy Oryx...');
-    const auditionMsg = {
-      type: 'voice.audition',
-      text: 'Ch�o b?n, t�i l� Bow! Gi?ng n�i Duy Oryx �ang ph�t tr?c ti?p tr�n iPhone qua Tailscale.',
-    };
-    wsRef.current.send(JSON.stringify(auditionMsg));
-    addLog('TX', `voice.audition -> "${auditionMsg.text}"`);
-  };
+    try {
+      setVoiceStage('SENDING');
+      const reqId = 'req_audition_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6);
+      const corrId = 'corr_audition_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6);
 
-  const getStageTitle = () => {
-    switch (voiceStage) {
-      case 'RECORDING':
-        return '�ANG THU �M (GI? �? N�I)...';
-      case 'THINKING':
-        return 'BRAIN �ANG X? L? (STT / LLM / TTS)...';
-      case 'SPEAKING':
-        return 'DUY ORYX �ANG TR? L?I (LOA IPHONE)...';
-      default:
-        return status === 'REGISTERED' ? 'S?N S�NG � GI? N�T �? N�I' : 'CH�A K?T N?I V?I BRAIN';
+      const payload = {
+        type: 'voice.roundtrip',
+        requestId: reqId,
+        correlationId: corrId,
+        bodyId: bodyId.trim(),
+        sessionId: sessionIdRef.current,
+        userId: 'boss_user',
+        role: 'owner',
+        isOwner: true,
+        simulatedTranscript:
+          'Chào Brain, tôi là Mobile Body iPhone 14 Pro, đang kiểm tra giọng nói Duy Oryx qua PTT.',
+        audioBase64: '',
+      };
+
+      wsRef.current?.send(JSON.stringify(payload));
+      setVoiceStage('WAITING');
+      addLog('TX', 'Sent Audition Test payload to Brain (Duy Oryx TTS probe)...');
+
+      clearWaitingTimeout();
+      waitingTimeoutRef.current = setTimeout(() => {
+        if (voiceStageRef.current === 'WAITING') {
+          addLog('ERR', 'Audition test timed out (20s)');
+          setVoiceStage('IDLE');
+        }
+      }, 20000);
+    } catch (err: any) {
+      addLog('ERR', 'Audition test error: ' + (err.message || String(err)));
+      setVoiceStage('IDLE');
     }
   };
 
   const getStatusColor = () => {
     switch (status) {
-      case 'REGISTERED':
+      case 'IDLE':
         return '#10B981';
-      case 'CONNECTED':
-        return '#3B82F6';
       case 'CONNECTING':
         return '#F59E0B';
       case 'ERROR':
         return '#EF4444';
       default:
-        return '#6B7280';
+        return '#64748B';
     }
   };
 
-  const isConnected = status === 'CONNECTED' || status === 'REGISTERED' || status === 'CONNECTING';
+  const getStageColor = () => {
+    switch (voiceStage) {
+      case 'RECORDING':
+        return '#EF4444';
+      case 'SENDING':
+        return '#3B82F6';
+      case 'WAITING':
+        return '#F59E0B';
+      case 'PLAYING':
+        return '#8B5CF6';
+      default:
+        return '#10B981';
+    }
+  };
+
+  const getStageLabel = () => {
+    switch (voiceStage) {
+      case 'RECORDING':
+        return '🔴 ĐANG THU ÂM (PTT ACTIVE)';
+      case 'SENDING':
+        return '⬆️ ĐANG TẢI LÊN BRAIN...';
+      case 'WAITING':
+        return '🧠 BRAIN ĐANG XỬ LÝ & TỔNG HỢP...';
+      case 'PLAYING':
+        return '🔊 DUY ORYX ĐANG NÓI (22.05kHz)...';
+      default:
+        return status === 'IDLE' ? '🟢 SẴN SÀNG ĐÀM THOẠI (GIỮ ĐỂ NÓI)' : '⚪ CHỜ KẾT NỐI';
+    }
+  };
 
   return (
-    <SafeAreaView style={styles.container}>
-      <StatusBar barStyle="light-content" backgroundColor="#0B0F19" />
+    <SafeAreaView style={styles.safeArea}>
+      <StatusBar barStyle="light-content" backgroundColor="#0B0F17" />
       <KeyboardAvoidingView
-        style={styles.flex}
+        style={styles.container}
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
       >
-        {/* Header Bar */}
+        {/* HEADER */}
         <View style={styles.header}>
-          <View>
-            <Text style={styles.headerTitle}>BOW TACTICAL BODY</Text>
-            <Text style={styles.headerSubtitle}>Tailscale Voice Mesh v4.0</Text>
+          <View style={styles.headerLeft}>
+            <Text style={styles.headerTitle}>BOW MOBILE BODY</Text>
+            <Text style={styles.headerSubtitle}>iPhone Walkie-Talkie • Duy Oryx Local TTS</Text>
           </View>
-          <View style={styles.headerRight}>
-            <View style={[styles.badge, { backgroundColor: getStatusColor() }]}>
-              <Text style={styles.badgeText}>{status}</Text>
-            </View>
-            <TouchableOpacity
-              style={styles.gearButton}
-              onPress={() => setShowConfig(!showConfig)}
-            >
-              <Text style={styles.gearText}>{showConfig ? '?' : '?'}</Text>
-            </TouchableOpacity>
-          </View>
+          <TouchableOpacity
+            style={styles.configToggleBtn}
+            onPress={() => setShowConfig(!showConfig)}
+          >
+            <Text style={styles.configToggleText}>{showConfig ? 'Đóng' : 'Cấu hình'}</Text>
+          </TouchableOpacity>
         </View>
 
-        {/* Expandable Connection Configuration */}
+        {/* STATUS BAR */}
+        <View style={styles.statusBarCard}>
+          <View style={styles.statusRow}>
+            <View style={[styles.statusDot, { backgroundColor: getStatusColor() }]} />
+            <Text style={[styles.statusText, { color: getStatusColor() }]}>
+              {status === 'IDLE'
+                ? 'ĐÃ KẾT NỐI & SẴN SÀNG (REGISTERED)'
+                : status === 'CONNECTING'
+                ? 'ĐANG KẾT NỐI BRAIN...'
+                : status === 'ERROR'
+                ? 'LỖI KẾT NỐI'
+                : 'ĐÃ NGẮT KẾT NỐI'}
+            </Text>
+          </View>
+          <TouchableOpacity
+            style={[
+              styles.connectBtn,
+              { backgroundColor: status === 'IDLE' ? '#1E293B' : '#2563EB' },
+            ]}
+            onPress={handleToggleConnect}
+          >
+            <Text style={styles.connectBtnText}>
+              {status === 'IDLE' || status === 'CONNECTING' ? 'Ngắt kết nối' : 'Kết nối Brain'}
+            </Text>
+          </TouchableOpacity>
+        </View>
+
+        {/* CONFIG ACCORDION */}
         {showConfig && (
-          <View style={styles.configContainer}>
-            <Text style={styles.label}>Brain WebSocket URL:</Text>
+          <View style={styles.configCard}>
+            <Text style={styles.configLabel}>Brain WebSocket URL (Tailscale WireGuard):</Text>
             <TextInput
               style={styles.input}
               value={serverUrl}
@@ -524,482 +672,437 @@ export default function App() {
               placeholderTextColor="#64748B"
               autoCapitalize="none"
               autoCorrect={false}
-              editable={!isConnected}
             />
-
-            <Text style={styles.label}>Pre-Shared Key (PSK):</Text>
+            <Text style={styles.configLabel}>Body Pre-Shared Key (PSK):</Text>
             <TextInput
               style={styles.input}
               value={psk}
               onChangeText={setPsk}
-              placeholder="PSK Token"
+              placeholder="PSK Secret"
+              placeholderTextColor="#64748B"
+              secureTextEntry
+            />
+            <Text style={styles.configLabel}>Body ID:</Text>
+            <TextInput
+              style={styles.input}
+              value={bodyId}
+              onChangeText={setBodyId}
+              placeholder="iphone-mobile-v1"
               placeholderTextColor="#64748B"
               autoCapitalize="none"
-              autoCorrect={false}
-              editable={!isConnected}
             />
-
-            <View style={styles.row}>
-              <View style={styles.flex}>
-                <Text style={styles.label}>Body ID:</Text>
-                <TextInput
-                  style={styles.input}
-                  value={bodyId}
-                  onChangeText={setBodyId}
-                  placeholder="iphone-mobile-v1"
-                  placeholderTextColor="#64748B"
-                  autoCapitalize="none"
-                  autoCorrect={false}
-                  editable={!isConnected}
-                />
-              </View>
-            </View>
-
-            <TouchableOpacity
-              style={[
-                styles.connectBtn,
-                { backgroundColor: isConnected ? '#DC2626' : '#2563EB' },
-              ]}
-              onPress={handleConnect}
-            >
-              <Text style={styles.connectBtnText}>
-                {isConnected ? 'Disconnect' : 'Connect & Register Capabilities'}
-              </Text>
-            </TouchableOpacity>
           </View>
         )}
 
-        {/* Main Tactical Walkie-Talkie Stage */}
-        <View style={styles.stageContainer}>
-          {/* Status & Latency Banner */}
-          <View style={styles.stageBanner}>
-            <View style={[styles.statusDot, { backgroundColor: voiceStage === 'RECORDING' ? '#EF4444' : voiceStage === 'SPEAKING' ? '#10B981' : '#38BDF8' }]} />
-            <Text style={styles.stageTitleText}>{getStageTitle()}</Text>
-            {latencyMs !== null && (
-              <Text style={styles.latencyText}>{latencyMs}ms</Text>
-            )}
-          </View>
+        {/* VOICE STAGE INDICATOR */}
+        <View style={[styles.stageBanner, { borderColor: getStageColor() }]}>
+          <Text style={[styles.stageText, { color: getStageColor() }]}>{getStageLabel()}</Text>
+          {latencyMs !== null && voiceStage === 'IDLE' && (
+            <Text style={styles.latencyText}>Độ trễ phản hồi: {latencyMs}ms</Text>
+          )}
+        </View>
 
-          {/* Transcript / Conversation Display */}
-          <View style={styles.transcriptCard}>
-            <View style={styles.dialogItem}>
-              <Text style={styles.dialogLabelUser}>B?N:</Text>
-              <Text style={styles.dialogTextUser}>
-                {userTranscript || (voiceStage === 'RECORDING' ? '�ang l?ng nghe...' : '�')}
-              </Text>
-            </View>
-
-            <View style={styles.dialogDivider} />
-
-            <View style={styles.dialogItem}>
-              <Text style={styles.dialogLabelBrain}>BOW (DUY ORYX):</Text>
-              <Text style={styles.dialogTextBrain}>
-                {brainResponse || (voiceStage === 'THINKING' ? '�ang suy ngh? c�u tr? l?i...' : '�')}
-              </Text>
-            </View>
-          </View>
-
-          {/* Big Push-To-Talk Button */}
-          <View style={styles.pttContainer}>
-            <Animated.View
-              style={[
-                styles.pttPulseRing,
-                {
-                  transform: [{ scale: pulseAnim }],
-                  opacity: voiceStage === 'RECORDING' ? 0.7 : 0.15,
-                  borderColor: voiceStage === 'RECORDING' ? '#EF4444' : '#0EA5E9',
-                },
-              ]}
-            />
+        {/* PTT BUTTON SECTION */}
+        <View style={styles.pttSection}>
+          <Animated.View
+            style={[
+              styles.pttButtonOuter,
+              {
+                transform: [{ scale: pulseAnim }],
+                borderColor: voiceStage === 'RECORDING' ? '#EF4444' : '#334155',
+                backgroundColor:
+                  voiceStage === 'RECORDING' ? 'rgba(239, 68, 68, 0.15)' : 'transparent',
+              },
+            ]}
+          >
             <TouchableOpacity
               activeOpacity={0.8}
               style={[
-                styles.pttButton,
+                styles.pttButtonInner,
                 {
                   backgroundColor:
                     voiceStage === 'RECORDING'
                       ? '#DC2626'
-                      : voiceStage === 'SPEAKING'
-                      ? '#059669'
-                      : voiceStage === 'THINKING'
-                      ? '#D97706'
-                      : status === 'REGISTERED'
-                      ? '#0284C7'
+                      : status === 'IDLE'
+                      ? '#2563EB'
                       : '#334155',
                 },
               ]}
               onPressIn={startRecording}
-              onPressOut={stopRecordingAndSend}
-              disabled={status !== 'REGISTERED'}
+              onPressOut={stopRecording}
+              disabled={status !== 'IDLE'}
             >
-              <Text style={styles.pttIcon}>???</Text>
-              <Text style={styles.pttButtonText}>
-                {voiceStage === 'RECORDING'
-                  ? 'TH? �? G?I'
-                  : voiceStage === 'THINKING'
-                  ? '�ANG NGH?...'
-                  : voiceStage === 'SPEAKING'
-                  ? '�ANG N�I...'
-                  : 'GI? �? N�I'}
+              <Text style={styles.pttButtonIcon}>
+                {voiceStage === 'RECORDING' ? '🎙️' : voiceStage === 'PLAYING' ? '🔊' : '🎤'}
               </Text>
-              <Text style={styles.pttHint}>Push-to-Talk (PTT)</Text>
-            </TouchableOpacity>
-          </View>
-
-          {/* Quick Audition Button */}
-          <View style={styles.auditionRow}>
-            <TouchableOpacity
-              style={[
-                styles.auditionBtn,
-                { opacity: status === 'REGISTERED' ? 1.0 : 0.4 },
-              ]}
-              onPress={handleAuditionDuyOryx}
-              disabled={status !== 'REGISTERED' || voiceStage !== 'IDLE'}
-            >
-              <Text style={styles.auditionBtnText}>
-                ? Audition Gi?ng Duy Oryx (Piper TTS)
+              <Text style={styles.pttButtonLabel}>
+                {voiceStage === 'RECORDING' ? 'NHẢ ĐỂ GỬI' : 'GIỮ ĐỂ NÓI'}
               </Text>
             </TouchableOpacity>
-          </View>
-        </View>
+          </Animated.View>
 
-        {/* Collapsible Network Raw Logs */}
-        <View style={styles.logHeaderRow}>
-          <Text style={styles.logHeaderTitle}>Network Logs & Capability Events</Text>
-          <TouchableOpacity onPress={clearLogs} style={styles.clearBtn}>
-            <Text style={styles.clearBtnText}>Clear</Text>
+          <TouchableOpacity
+            style={styles.auditionBtn}
+            onPress={handleAuditionTest}
+            disabled={status !== 'IDLE' || voiceStage !== 'IDLE'}
+          >
+            <Text style={styles.auditionBtnText}>🔊 Thử giọng Duy Oryx (Audition Test)</Text>
           </TouchableOpacity>
         </View>
 
-        <ScrollView
-          ref={scrollViewRef}
-          style={styles.logContainer}
-          contentContainerStyle={styles.logContent}
-          onContentSizeChange={() => scrollViewRef.current?.scrollToEnd({ animated: true })}
-        >
-          {logs.length === 0 ? (
-            <Text style={styles.emptyLogText}>Ch�a c� log. B?m Connect v� gi? PTT �? b?t �?u.</Text>
-          ) : (
-            logs.map((log) => (
-              <View key={log.id} style={styles.logEntry}>
-                <Text style={styles.logTime}>{log.timestamp}</Text>
-                <Text
-                  style={[
-                    styles.logTag,
-                    log.type === 'TX' && styles.tagTX,
-                    log.type === 'RX' && styles.tagRX,
-                    log.type === 'SYS' && styles.tagSYS,
-                    log.type === 'ERR' && styles.tagERR,
-                  ]}
-                >
-                  [{log.type}]
-                </Text>
-                <Text style={styles.logText}>{log.text}</Text>
+        {/* TRANSCRIPT & RESPONSE CARD */}
+        {(userTranscript !== '' || brainResponse !== '') && (
+          <View style={styles.transcriptCard}>
+            {userTranscript !== '' && (
+              <View style={styles.dialogueRow}>
+                <Text style={styles.dialogueSpeaker}>Bạn (STT 16kHz):</Text>
+                <Text style={styles.dialogueUserText}>{userTranscript}</Text>
               </View>
-            ))
-          )}
-        </ScrollView>
+            )}
+            {brainResponse !== '' && (
+              <View style={[styles.dialogueRow, { marginTop: 8 }]}>
+                <Text style={styles.dialogueSpeakerBrain}>Brain Duy Oryx:</Text>
+                <Text style={styles.dialogueBrainText}>{brainResponse}</Text>
+              </View>
+            )}
+          </View>
+        )}
+
+        {/* NETWORK & SYSTEM LOG CONSOLE */}
+        <View style={styles.logContainer}>
+          <View style={styles.logHeader}>
+            <Text style={styles.logTitle}>LOG GIAO THỨC & ÂM THANH</Text>
+            <TouchableOpacity onPress={clearLogs}>
+              <Text style={styles.clearLogText}>Xoá log</Text>
+            </TouchableOpacity>
+          </View>
+          <ScrollView
+            ref={scrollViewRef}
+            style={styles.logScroll}
+            onContentSizeChange={() => scrollViewRef.current?.scrollToEnd({ animated: true })}
+          >
+            {logs.length === 0 ? (
+              <Text style={styles.emptyLogText}>Chưa có log sự kiện nào.</Text>
+            ) : (
+              logs.map((log) => (
+                <View key={log.id} style={styles.logLine}>
+                  <Text style={styles.logTime}>{log.timestamp}</Text>
+                  <Text
+                    style={[
+                      styles.logBadge,
+                      log.type === 'TX'
+                        ? styles.logTx
+                        : log.type === 'RX'
+                        ? styles.logRx
+                        : log.type === 'ERR'
+                        ? styles.logErr
+                        : styles.logSys,
+                    ]}
+                  >
+                    {log.type}
+                  </Text>
+                  <Text style={styles.logContent}>{log.text}</Text>
+                </View>
+              ))
+            )}
+          </ScrollView>
+        </View>
       </KeyboardAvoidingView>
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
+  safeArea: {
+    flex: 1,
+    backgroundColor: '#0B0F17',
+  },
   container: {
     flex: 1,
-    backgroundColor: '#0B0F19',
-  },
-  flex: {
-    flex: 1,
+    paddingHorizontal: 16,
+    paddingTop: 8,
+    paddingBottom: 16,
   },
   header: {
     flexDirection: 'row',
-    alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    backgroundColor: '#111827',
+    alignItems: 'center',
+    paddingVertical: 8,
     borderBottomWidth: 1,
-    borderBottomColor: '#1F2937',
+    borderBottomColor: '#1E293B',
+  },
+  headerLeft: {
+    flex: 1,
   },
   headerTitle: {
-    fontSize: 16,
+    fontSize: 18,
     fontWeight: '800',
-    color: '#38BDF8',
-    letterSpacing: 1,
+    color: '#F8FAFC',
+    letterSpacing: 1.2,
   },
   headerSubtitle: {
-    fontSize: 11,
-    color: '#64748B',
+    fontSize: 12,
+    color: '#94A3B8',
     marginTop: 2,
   },
-  headerRight: {
+  configToggleBtn: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 8,
+    backgroundColor: '#1E293B',
+  },
+  configToggleText: {
+    color: '#93C5FD',
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  statusBarCard: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    backgroundColor: '#111827',
+    padding: 12,
+    borderRadius: 12,
+    marginTop: 12,
+    borderWidth: 1,
+    borderColor: '#1F2937',
+  },
+  statusRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
+    flex: 1,
   },
-  badge: {
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 6,
+  statusDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    marginRight: 8,
   },
-  badgeText: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: '#FFFFFF',
-    textTransform: 'uppercase',
-  },
-  gearButton: {
-    padding: 6,
-    backgroundColor: '#1F2937',
-    borderRadius: 6,
-  },
-  gearText: {
-    color: '#94A3B8',
-    fontSize: 14,
-    fontWeight: 'bold',
-  },
-  configContainer: {
-    padding: 14,
-    backgroundColor: '#111827',
-    borderBottomWidth: 1,
-    borderBottomColor: '#1F2937',
-  },
-  label: {
-    fontSize: 11,
-    fontWeight: '600',
-    color: '#94A3B8',
-    marginBottom: 4,
-    marginTop: 6,
-  },
-  input: {
-    backgroundColor: '#0B0F19',
-    color: '#F8FAFC',
-    borderRadius: 6,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
+  statusText: {
     fontSize: 12,
-    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
-    borderWidth: 1,
-    borderColor: '#334155',
-  },
-  row: {
-    flexDirection: 'row',
-    gap: 8,
+    fontWeight: '700',
+    flexShrink: 1,
   },
   connectBtn: {
-    marginTop: 10,
-    borderRadius: 6,
-    paddingVertical: 10,
-    alignItems: 'center',
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 8,
+    marginLeft: 8,
   },
   connectBtnText: {
     color: '#FFFFFF',
     fontSize: 13,
     fontWeight: '700',
   },
-  stageContainer: {
-    padding: 14,
-    alignItems: 'center',
-  },
-  stageBanner: {
-    flexDirection: 'row',
-    alignItems: 'center',
+  configCard: {
     backgroundColor: '#111827',
+    padding: 12,
+    borderRadius: 12,
+    marginTop: 8,
+    borderWidth: 1,
+    borderColor: '#374151',
+  },
+  configLabel: {
+    color: '#9CA3AF',
+    fontSize: 12,
+    fontWeight: '600',
+    marginBottom: 4,
+    marginTop: 6,
+  },
+  input: {
+    backgroundColor: '#030712',
+    color: '#F9FAFB',
+    borderRadius: 8,
+    paddingHorizontal: 10,
     paddingVertical: 8,
-    paddingHorizontal: 14,
-    borderRadius: 20,
+    fontSize: 13,
     borderWidth: 1,
     borderColor: '#1F2937',
-    marginBottom: 12,
   },
-  statusDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    marginRight: 8,
+  stageBanner: {
+    marginTop: 12,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+    backgroundColor: '#111827',
+    borderWidth: 1.5,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
-  stageTitleText: {
-    color: '#F1F5F9',
-    fontSize: 12,
-    fontWeight: '700',
+  stageText: {
+    fontSize: 13,
+    fontWeight: '800',
     letterSpacing: 0.5,
   },
   latencyText: {
-    color: '#38BDF8',
     fontSize: 11,
-    fontWeight: '700',
-    marginLeft: 8,
-    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
+    color: '#94A3B8',
+    marginTop: 2,
   },
-  transcriptCard: {
-    width: '100%',
-    backgroundColor: '#111827',
-    borderRadius: 10,
-    padding: 12,
-    borderWidth: 1,
-    borderColor: '#1F2937',
-    marginBottom: 16,
-  },
-  dialogItem: {
-    marginVertical: 2,
-  },
-  dialogLabelUser: {
-    fontSize: 10,
-    fontWeight: '800',
-    color: '#38BDF8',
-    marginBottom: 2,
-  },
-  dialogTextUser: {
-    fontSize: 13,
-    color: '#E2E8F0',
-    lineHeight: 18,
-  },
-  dialogDivider: {
-    height: 1,
-    backgroundColor: '#1F2937',
-    marginVertical: 8,
-  },
-  dialogLabelBrain: {
-    fontSize: 10,
-    fontWeight: '800',
-    color: '#4ADE80',
-    marginBottom: 2,
-  },
-  dialogTextBrain: {
-    fontSize: 13,
-    color: '#F8FAFC',
-    lineHeight: 18,
-  },
-  pttContainer: {
+  pttSection: {
     alignItems: 'center',
     justifyContent: 'center',
-    marginVertical: 10,
-    position: 'relative',
+    paddingVertical: 18,
   },
-  pttPulseRing: {
-    position: 'absolute',
-    width: 170,
-    height: 170,
-    borderRadius: 85,
+  pttButtonOuter: {
+    width: 150,
+    height: 150,
+    borderRadius: 75,
     borderWidth: 3,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
-  pttButton: {
-    width: 140,
-    height: 140,
-    borderRadius: 70,
+  pttButtonInner: {
+    width: 130,
+    height: 130,
+    borderRadius: 65,
     alignItems: 'center',
     justifyContent: 'center',
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 6 },
     shadowOpacity: 0.4,
-    shadowRadius: 10,
+    shadowRadius: 8,
     elevation: 8,
   },
-  pttIcon: {
-    fontSize: 32,
+  pttButtonIcon: {
+    fontSize: 40,
     marginBottom: 4,
   },
-  pttButtonText: {
+  pttButtonLabel: {
     color: '#FFFFFF',
-    fontSize: 14,
-    fontWeight: '900',
-    letterSpacing: 0.8,
-  },
-  pttHint: {
-    color: 'rgba(255,255,255,0.7)',
-    fontSize: 10,
-    marginTop: 2,
-  },
-  auditionRow: {
-    width: '100%',
-    marginTop: 12,
+    fontSize: 13,
+    fontWeight: '800',
+    letterSpacing: 1,
   },
   auditionBtn: {
-    backgroundColor: '#1E293B',
-    paddingVertical: 10,
+    marginTop: 12,
     paddingHorizontal: 16,
-    borderRadius: 8,
+    paddingVertical: 8,
+    borderRadius: 20,
+    backgroundColor: '#1E293B',
     borderWidth: 1,
     borderColor: '#334155',
-    alignItems: 'center',
   },
   auditionBtnText: {
     color: '#38BDF8',
     fontSize: 12,
     fontWeight: '700',
   },
-  logHeaderRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingHorizontal: 16,
-    paddingTop: 8,
-    paddingBottom: 4,
+  transcriptCard: {
+    backgroundColor: '#111827',
+    borderRadius: 12,
+    padding: 12,
+    marginBottom: 10,
+    borderWidth: 1,
+    borderColor: '#1F2937',
   },
-  logHeaderTitle: {
+  dialogueRow: {
+    flexDirection: 'column',
+  },
+  dialogueSpeaker: {
     fontSize: 11,
     fontWeight: '700',
-    color: '#64748B',
-    textTransform: 'uppercase',
+    color: '#60A5FA',
+    marginBottom: 2,
   },
-  clearBtn: {
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    backgroundColor: '#1F2937',
-    borderRadius: 4,
+  dialogueUserText: {
+    fontSize: 13,
+    color: '#E2E8F0',
+    lineHeight: 18,
   },
-  clearBtnText: {
-    color: '#94A3B8',
-    fontSize: 10,
+  dialogueSpeakerBrain: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#A78BFA',
+    marginBottom: 2,
+  },
+  dialogueBrainText: {
+    fontSize: 13,
+    color: '#F8FAFC',
+    lineHeight: 18,
     fontWeight: '600',
   },
   logContainer: {
     flex: 1,
-    backgroundColor: '#050811',
-    marginHorizontal: 14,
-    marginBottom: 10,
-    borderRadius: 8,
+    backgroundColor: '#030712',
+    borderRadius: 12,
+    padding: 10,
     borderWidth: 1,
-    borderColor: '#1F2937',
+    borderColor: '#1E293B',
+    minHeight: 160,
   },
-  logContent: {
-    padding: 8,
+  logHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 6,
+    paddingBottom: 4,
+    borderBottomWidth: 1,
+    borderBottomColor: '#111827',
+  },
+  logTitle: {
+    color: '#64748B',
+    fontSize: 11,
+    fontWeight: '800',
+    letterSpacing: 1,
+  },
+  clearLogText: {
+    color: '#94A3B8',
+    fontSize: 11,
+  },
+  logScroll: {
+    flex: 1,
   },
   emptyLogText: {
     color: '#475569',
-    fontSize: 11,
+    fontSize: 12,
     fontStyle: 'italic',
     textAlign: 'center',
-    marginTop: 10,
+    marginTop: 20,
   },
-  logEntry: {
+  logLine: {
     flexDirection: 'row',
     alignItems: 'flex-start',
     marginBottom: 4,
   },
   logTime: {
-    fontSize: 9,
-    color: '#64748B',
-    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
-    marginRight: 4,
-    marginTop: 1,
-  },
-  logTag: {
-    fontSize: 9,
-    fontWeight: '700',
-    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
-    marginRight: 4,
-    marginTop: 1,
-  },
-  tagTX: { color: '#38BDF8' },
-  tagRX: { color: '#4ADE80' },
-  tagSYS: { color: '#A78BFA' },
-  tagERR: { color: '#F87171' },
-  logText: {
-    flex: 1,
+    color: '#475569',
     fontSize: 10,
-    color: '#CBD5E1',
     fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
+    marginRight: 6,
+    marginTop: 1,
+  },
+  logBadge: {
+    fontSize: 9,
+    fontWeight: '800',
+    paddingHorizontal: 4,
+    paddingVertical: 1,
+    borderRadius: 4,
+    marginRight: 6,
+    overflow: 'hidden',
+    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
+  },
+  logTx: {
+    backgroundColor: 'rgba(59, 130, 246, 0.2)',
+    color: '#60A5FA',
+  },
+  logRx: {
+    backgroundColor: 'rgba(16, 185, 129, 0.2)',
+    color: '#34D399',
+  },
+  logSys: {
+    backgroundColor: 'rgba(148, 163, 184, 0.2)',
+    color: '#94A3B8',
+  },
+  logErr: {
+    backgroundColor: 'rgba(239, 68, 68, 0.2)',
+    color: '#F87171',
+  },
+  logContent: {
+    flex: 1,
+    color: '#CBD5E1',
+    fontSize: 11,
+    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
+    lineHeight: 15,
   },
 });
