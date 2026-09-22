@@ -22,7 +22,7 @@ interface LogEntry {
 }
 
 export default function App() {
-  const [serverUrl, setServerUrl] = useState('ws://100.119.137.60:4000/ws/body');
+  const [serverUrl, setServerUrl] = useState('ws://100.122.26.119:4000/ws/body');
   const [psk, setPsk] = useState('xcycy79QMbeWsYATXJOJCGbrd6cjSyDjb9RkLbqjfXE');
   const [bodyId, setBodyId] = useState('iphone-mobile-v1');
   const [status, setStatus] = useState<ConnectionStatus>('DISCONNECTED');
@@ -211,7 +211,7 @@ export default function App() {
             style={styles.input}
             value={serverUrl}
             onChangeText={setServerUrl}
-            placeholder="ws://100.119.137.60:4000/ws/body"
+            placeholder="ws://100.122.26.119:4000/ws/body"
             placeholderTextColor="#64748B"
             autoCapitalize="none"
             autoCorrect={false}
