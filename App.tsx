@@ -14,8 +14,15 @@ import {
   Easing,
   Alert,
 } from 'react-native';
-import { Audio } from 'expo-av';
-import * as FileSystem from 'expo-file-system/legacy';
+import {
+  AudioRecorder,
+  RecordingPresets,
+  requestRecordingPermissionsAsync,
+  setAudioModeAsync,
+  createAudioPlayer,
+  type AudioPlayer,
+} from 'expo-audio';
+import * as FileSystem from 'expo-file-system';
 
 type ConnectionStatus = 'DISCONNECTED' | 'CONNECTING' | 'CONNECTED' | 'REGISTERED' | 'ERROR';
 type VoiceStage = 'IDLE' | 'RECORDING' | 'THINKING' | 'SPEAKING';
@@ -45,8 +52,8 @@ export default function App() {
 
   const wsRef = useRef<WebSocket | null>(null);
   const heartbeatTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const recordingRef = useRef<Audio.Recording | null>(null);
-  const soundRef = useRef<Audio.Sound | null>(null);
+  const recorderRef = useRef<AudioRecorder | null>(null);
+  const playerRef = useRef<AudioPlayer | null>(null);
   const pulseAnim = useRef(new Animated.Value(1)).current;
   const scrollViewRef = useRef<ScrollView | null>(null);
 
@@ -62,22 +69,23 @@ export default function App() {
   useEffect(() => {
     (async () => {
       try {
-        await Audio.setAudioModeAsync({
-          allowsRecordingIOS: true,
-          playsInSilentModeIOS: true,
-          staysActiveInBackground: false,
-          shouldDuckAndroid: true,
-          playThroughEarpieceAndroid: false,
+        await setAudioModeAsync({
+          playsInSilentMode: true,
+          allowsRecording: true,
+          shouldPlayInBackground: false,
+          interruptionMode: 'mixWithOthers',
         });
       } catch (err: any) {
-        addLog('ERR', `Audio setup error: ${err.message}`);
+        addLog('ERR', `Audio mode setup error: ${err.message || String(err)}`);
       }
     })();
 
     return () => {
       stopHeartbeat();
       if (wsRef.current) wsRef.current.close();
-      if (soundRef.current) soundRef.current.unloadAsync().catch(() => {});
+      if (playerRef.current) {
+        try { playerRef.current.release(); } catch {}
+      }
     };
   }, []);
 
@@ -131,9 +139,12 @@ export default function App() {
   const playAudioBase64 = async (base64Data: string, onDone?: () => void) => {
     try {
       setVoiceStage('SPEAKING');
-      if (soundRef.current) {
-        try { await soundRef.current.unloadAsync(); } catch {}
-        soundRef.current = null;
+      if (playerRef.current) {
+        try {
+          playerRef.current.pause();
+          playerRef.current.release();
+        } catch {}
+        playerRef.current = null;
       }
 
       const tempFileUri = `${FileSystem.cacheDirectory}incoming_voice_${Date.now()}.wav`;
@@ -141,21 +152,19 @@ export default function App() {
         encoding: FileSystem.EncodingType.Base64,
       });
 
-      const { sound } = await Audio.Sound.createAsync(
-        { uri: tempFileUri },
-        { shouldPlay: true, volume: 1.0 }
-      );
-      soundRef.current = sound;
+      const player = createAudioPlayer({ uri: tempFileUri });
+      playerRef.current = player;
 
-      sound.setOnPlaybackStatusUpdate((playbackStatus) => {
+      player.addListener('playbackStatusUpdate', (playbackStatus) => {
         if (playbackStatus.isLoaded && playbackStatus.didJustFinish) {
           setVoiceStage('IDLE');
-          sound.unloadAsync().catch(() => {});
+          try { player.release(); } catch {}
           FileSystem.deleteAsync(tempFileUri, { idempotent: true }).catch(() => {});
           if (onDone) onDone();
         }
       });
 
+      player.play();
       addLog('SYS', '?? Ðang phát audio gi?ng Duy Oryx ra loa iPhone...');
     } catch (err: any) {
       addLog('ERR', `Playback error: ${err.message || String(err)}`);
@@ -258,7 +267,6 @@ export default function App() {
               setStatus('ERROR');
             }
           } else if (parsed.type === 'body.command') {
-            // Brain sends command to iPhone (e.g. audio.play)
             const cmd = parsed.command;
             addLog('RX', `[COMMAND] ${cmd.capability} (id: ${cmd.commandId})`);
 
@@ -301,7 +309,6 @@ export default function App() {
               addLog('TX', `body.command_result -> audio.status (HEALTHY)`);
             }
           } else if (parsed.type === 'voice.audition_result') {
-            // Direct Audition Result from Piper TTS
             addLog('RX', `[AUDITION] Piper TTS Duy Oryx received (${parsed.latencyMs}ms)`);
             setBrainResponse(parsed.text || 'Audition sample');
             setLatencyMs(parsed.latencyMs);
@@ -309,14 +316,12 @@ export default function App() {
               await playAudioBase64(parsed.audioBase64);
             }
           } else if (parsed.type === 'voice.roundtrip_result') {
-            // Full E2E Voice Roundtrip Result
             setVoiceStage('IDLE');
             setUserTranscript(parsed.userText || '');
             setBrainResponse(parsed.responseText || '');
             setLatencyMs(parsed.totalDurationMs || null);
             addLog('RX', `[ROUNDTRIP] User: "${parsed.userText}" -> Brain: "${parsed.responseText}" (${parsed.totalDurationMs}ms)`);
             if (parsed.audioPlayback || parsed.audioBase64) {
-              // If audio base64 is in payload, play it
               if (parsed.audioBase64) {
                 await playAudioBase64(parsed.audioBase64);
               }
@@ -369,7 +374,7 @@ export default function App() {
     }
 
     try {
-      const permission = await Audio.requestPermissionsAsync();
+      const permission = await requestRecordingPermissionsAsync();
       if (permission.status !== 'granted') {
         Alert.alert('C?n c?p quy?n Micro', 'Vui l?ng cho phép quy?n truy c?p Microphone trong Cài ð?t iPhone.');
         return;
@@ -378,32 +383,10 @@ export default function App() {
       setVoiceStage('RECORDING');
       addLog('SYS', '??? PTT B?T Ð?U: Ðang thu âm microphone...');
 
-      // High Quality 16kHz WAV Preset for STT
-      const recording = new Audio.Recording();
-      await recording.prepareToRecordAsync({
-        android: {
-          extension: '.wav',
-          outputFormat: Audio.AndroidOutputFormat.DEFAULT,
-          audioEncoder: Audio.AndroidAudioEncoder.DEFAULT,
-          sampleRate: 16000,
-          numberOfChannels: 1,
-          bitRate: 128000,
-        },
-        ios: {
-          extension: '.wav',
-          audioQuality: Audio.IOSAudioQuality.HIGH,
-          sampleRate: 16000,
-          numberOfChannels: 1,
-          bitRate: 128000,
-          linearPCMBitDepth: 16,
-          linearPCMIsBigEndian: false,
-          linearPCMIsFloat: false,
-        },
-        web: {},
-      });
-
-      await recording.startAsync();
-      recordingRef.current = recording;
+      const recorder = new AudioRecorder(RecordingPresets.HIGH_QUALITY);
+      await recorder.prepareToRecordAsync();
+      recorder.record();
+      recorderRef.current = recorder;
     } catch (err: any) {
       addLog('ERR', `L?i b?t ð?u thu âm: ${err.message || String(err)}`);
       setVoiceStage('IDLE');
@@ -418,10 +401,11 @@ export default function App() {
       setVoiceStage('THINKING');
       addLog('SYS', '? PTT K?T THÚC: Ðang g?i audio t?i Brain (Whisper -> Piper)...');
 
-      if (!recordingRef.current) return;
-      await recordingRef.current.stopAndUnloadAsync();
-      const uri = recordingRef.current.getURI();
-      recordingRef.current = null;
+      const recorder = recorderRef.current;
+      if (!recorder) return;
+      await recorder.stop();
+      const uri = recorder.uri;
+      recorderRef.current = null;
 
       if (!uri) {
         addLog('ERR', 'Recording URI r?ng');
@@ -429,12 +413,10 @@ export default function App() {
         return;
       }
 
-      // Read audio file to Base64
       const base64Audio = await FileSystem.readAsStringAsync(uri, {
         encoding: FileSystem.EncodingType.Base64,
       });
 
-      // Cleanup local temp recording file
       FileSystem.deleteAsync(uri, { idempotent: true }).catch(() => {});
 
       if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
