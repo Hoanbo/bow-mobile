@@ -24,7 +24,7 @@ interface LogEntry {
 export default function App() {
   const [serverUrl, setServerUrl] = useState('ws://100.119.137.60:4000/ws/body');
   const [psk, setPsk] = useState('xcycy79QMbeWsYATXJOJCGbrd6cjSyDjb9RkLbqjfXE');
-  const [bodyId, setBodyId] = useState('iphone-14-pro');
+  const [bodyId, setBodyId] = useState('iphone-mobile-v1');
   const [status, setStatus] = useState<ConnectionStatus>('DISCONNECTED');
   const [logs, setLogs] = useState<LogEntry[]>([]);
 
@@ -86,20 +86,25 @@ export default function App() {
     setStatus('CONNECTING');
 
     try {
-      const ws = new WebSocket(url);
+      // React Native supports options as 3rd parameter with custom headers
+      const ws = new (WebSocket as any)(url, [], {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
       wsRef.current = ws;
 
       ws.onopen = () => {
         addLog('SYS', 'WebSocket connection established (OPEN)');
         setStatus('CONNECTED');
 
-        // Send Body Advertisement
+        // Send CapabilityAdvertisement r?ng theo BodyProtocol
         const advertiseMsg = {
           type: 'body.advertise',
           advertisement: {
             bodyId: bodyId.trim(),
             bodyType: 'mobile',
-            name: 'iPhone 14 Pro',
+            name: 'iPhone Mobile Body',
             capabilities: [],
           },
         };
@@ -111,7 +116,7 @@ export default function App() {
         startHeartbeat(ws);
       };
 
-      ws.onmessage = (event) => {
+      ws.onmessage = (event: any) => {
         try {
           const raw = typeof event.data === 'string' ? event.data : '<binary data>';
           addLog('RX', raw);
@@ -123,9 +128,10 @@ export default function App() {
               addLog('SYS', `*** Brain verified body: REGISTERED (id: ${parsed.bodyId}) ***`);
             } else {
               addLog('ERR', `Registration rejected: ${parsed.status || 'UNKNOWN'}`);
+              setStatus('ERROR');
             }
           } else if (parsed.type === 'body.heartbeat_ack') {
-            // Heartbeat ACK received
+            // Heartbeat ACK
           }
         } catch (e: any) {
           addLog('RX', `Raw data: ${event.data}`);
@@ -137,7 +143,7 @@ export default function App() {
         setStatus('ERROR');
       };
 
-      ws.onclose = (e) => {
+      ws.onclose = (e: any) => {
         stopHeartbeat();
         setStatus('DISCONNECTED');
         addLog('SYS', `WebSocket disconnected (code: ${e.code}, reason: ${e.reason || 'normal close'})`);
@@ -232,7 +238,7 @@ export default function App() {
                 style={styles.input}
                 value={bodyId}
                 onChangeText={setBodyId}
-                placeholder="iphone-14-pro"
+                placeholder="iphone-mobile-v1"
                 placeholderTextColor="#64748B"
                 autoCapitalize="none"
                 autoCorrect={false}
@@ -255,7 +261,7 @@ export default function App() {
         </View>
 
         <View style={styles.logHeaderRow}>
-          <Text style={styles.logHeaderTitle}>Network Logs (Spike Bước 0)</Text>
+          <Text style={styles.logHeaderTitle}>Network Logs (Spike B�?c 0)</Text>
           <TouchableOpacity onPress={clearLogs} style={styles.clearBtn}>
             <Text style={styles.clearBtnText}>Clear</Text>
           </TouchableOpacity>
@@ -268,7 +274,7 @@ export default function App() {
           onContentSizeChange={() => scrollViewRef.current?.scrollToEnd({ animated: true })}
         >
           {logs.length === 0 ? (
-            <Text style={styles.emptyLogText}>No network logs yet. Tap 'Connect' to test.</Text>
+            <Text style={styles.emptyLogText}>No network logs yet. Tap 'Connect & Advertise' to test.</Text>
           ) : (
             logs.map((log) => (
               <View key={log.id} style={styles.logEntry}>
