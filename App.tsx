@@ -71,18 +71,12 @@ export default function App() {
   );
   const [bodyId, setBodyId] = useState('iphone-mobile-v1');
   const [status, setStatus] = useState<ConnectionStatus>('DISCONNECTED');
-  const [voiceStage, setVoiceStageState] = useState<VoiceStage>('IDLE');
+  const [voiceStage, setVoiceStage] = useState<VoiceStage>('IDLE');
   const [userTranscript, setUserTranscript] = useState<string>('');
   const [brainResponse, setBrainResponse] = useState<string>('');
   const [latencyMs, setLatencyMs] = useState<number | null>(null);
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [showConfig, setShowConfig] = useState<boolean>(false);
-
-  const voiceStageRef = useRef<VoiceStage>('IDLE');
-  const setVoiceStage = (stage: VoiceStage) => {
-    voiceStageRef.current = stage;
-    setVoiceStageState(stage);
-  };
 
   const wsRef = useRef<WebSocket | null>(null);
   const heartbeatTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -255,7 +249,7 @@ export default function App() {
       });
 
       player.play();
-      addLog('SYS', 'Playing Duy Oryx audio (22.05kHz WAV) through iPhone speaker...');
+      addLog('SYS', 'Playing BOWCON audio (Duy Oryx Voice 22.05kHz) through iPhone speaker...');
     } catch (err: any) {
       addLog('ERR', 'Playback error: ' + (err.message || String(err)));
       setVoiceStage('IDLE');
@@ -340,7 +334,7 @@ export default function App() {
               setBrainResponse(rText);
 
               addLog('RX', 'STT User: "' + uText + '"');
-              addLog('RX', 'Brain Response (' + totalMs + 'ms): "' + rText + '"');
+              addLog('RX', 'BOWCON (' + totalMs + 'ms): "' + rText + '"');
 
               if (msg.speechAudioBase64) {
                 playAudioBase64(msg.speechAudioBase64);
@@ -416,7 +410,10 @@ export default function App() {
       return;
     }
     if (
-      voiceStage !== 'IDLE'
+      voiceStage === 'RECORDING' ||
+      voiceStage === 'SENDING' ||
+      voiceStage === 'WAITING' ||
+      voiceStage === 'PLAYING'
     ) {
       return;
     }
@@ -433,6 +430,7 @@ export default function App() {
       }
 
       setVoiceStage('RECORDING');
+      await recorder.prepareToRecordAsync();
       recorder.record();
       addLog('SYS', 'PTT Recording started (16kHz Mono 16-bit PCM WAV)...');
 
@@ -452,7 +450,7 @@ export default function App() {
   // Push-to-Talk: Stop Recording & Send to Brain (Press Out)
   const stopRecording = async () => {
     clearMaxRecordingTimer();
-    if (voiceStageRef.current !== 'RECORDING') return;
+    if (voiceStage !== 'RECORDING') return;
 
     try {
       setVoiceStage('SENDING');
@@ -476,12 +474,7 @@ export default function App() {
         return;
       }
 
-      addLog(
-        'SYS',
-        'Audio captured (' +
-          Math.round((audioBase64.length * 3) / 4 / 1024) +
-          ' KB). Uploading to Brain...'
-      );
+      addLog('SYS', 'Audio captured (' + Math.round((audioBase64.length * 3) / 4 / 1024) + ' KB). Uploading to Brain...');
 
       if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
         addLog('ERR', 'WebSocket is disconnected while trying to send audio');
@@ -511,7 +504,7 @@ export default function App() {
       // 20s Waiting timeout fallback
       clearWaitingTimeout();
       waitingTimeoutRef.current = setTimeout(() => {
-        if (voiceStageRef.current === 'WAITING') {
+        if (voiceStage === 'WAITING') {
           addLog('ERR', 'Voice roundtrip timed out (20s) waiting for Brain response');
           setVoiceStage('IDLE');
           Alert.alert('Hết thời gian chờ', 'Brain không phản hồi yêu cầu Voice trong 20 giây.');
@@ -519,52 +512,6 @@ export default function App() {
       }, 20000);
     } catch (err: any) {
       addLog('ERR', 'Stop recording / upload error: ' + (err.message || String(err)));
-      setVoiceStage('IDLE');
-    }
-  };
-
-  // Audition Voice Test Button (Tests TTS audio pipeline directly)
-  const handleAuditionTest = () => {
-    if (status !== 'IDLE') {
-      Alert.alert('Chưa kết nối Brain', 'Vui lòng kết nối Brain trước khi thử giọng nói Duy Oryx.');
-      return;
-    }
-    if (voiceStageRef.current !== 'IDLE') {
-      return;
-    }
-
-    try {
-      setVoiceStage('SENDING');
-      const reqId = 'req_audition_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6);
-      const corrId = 'corr_audition_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6);
-
-      const payload = {
-        type: 'voice.roundtrip',
-        requestId: reqId,
-        correlationId: corrId,
-        bodyId: bodyId.trim(),
-        sessionId: sessionIdRef.current,
-        userId: 'boss_user',
-        role: 'owner',
-        isOwner: true,
-        simulatedTranscript:
-          'Chào Brain, tôi là Mobile Body iPhone 14 Pro, đang kiểm tra giọng nói Duy Oryx qua PTT.',
-        audioBase64: '',
-      };
-
-      wsRef.current?.send(JSON.stringify(payload));
-      setVoiceStage('WAITING');
-      addLog('TX', 'Sent Audition Test payload to Brain (Duy Oryx TTS probe)...');
-
-      clearWaitingTimeout();
-      waitingTimeoutRef.current = setTimeout(() => {
-        if (voiceStageRef.current === 'WAITING') {
-          addLog('ERR', 'Audition test timed out (20s)');
-          setVoiceStage('IDLE');
-        }
-      }, 20000);
-    } catch (err: any) {
-      addLog('ERR', 'Audition test error: ' + (err.message || String(err)));
       setVoiceStage('IDLE');
     }
   };
@@ -604,9 +551,9 @@ export default function App() {
       case 'SENDING':
         return '⬆️ ĐANG TẢI LÊN BRAIN...';
       case 'WAITING':
-        return '🧠 BRAIN ĐANG XỬ LÝ & TỔNG HỢP...';
+        return '🧠 BOWCON ĐANG SUY NGHĨ...';
       case 'PLAYING':
-        return '🔊 DUY ORYX ĐANG NÓI (22.05kHz)...';
+        return '🔊 BOWCON ĐANG NÓI (22.05kHz)...';
       default:
         return status === 'IDLE' ? '🟢 SẴN SÀNG ĐÀM THOẠI (GIỮ ĐỂ NÓI)' : '⚪ CHỜ KẾT NỐI';
     }
@@ -623,7 +570,7 @@ export default function App() {
         <View style={styles.header}>
           <View style={styles.headerLeft}>
             <Text style={styles.headerTitle}>BOW MOBILE BODY</Text>
-            <Text style={styles.headerSubtitle}>iPhone Walkie-Talkie • Duy Oryx Local TTS</Text>
+            <Text style={styles.headerSubtitle}>iPhone Walkie-Talkie • Duy Oryx Voice</Text>
           </View>
           <TouchableOpacity
             style={styles.configToggleBtn}
@@ -710,8 +657,7 @@ export default function App() {
               {
                 transform: [{ scale: pulseAnim }],
                 borderColor: voiceStage === 'RECORDING' ? '#EF4444' : '#334155',
-                backgroundColor:
-                  voiceStage === 'RECORDING' ? 'rgba(239, 68, 68, 0.15)' : 'transparent',
+                backgroundColor: voiceStage === 'RECORDING' ? 'rgba(239, 68, 68, 0.15)' : 'transparent',
               },
             ]}
           >
@@ -740,14 +686,6 @@ export default function App() {
               </Text>
             </TouchableOpacity>
           </Animated.View>
-
-          <TouchableOpacity
-            style={styles.auditionBtn}
-            onPress={handleAuditionTest}
-            disabled={status !== 'IDLE' || voiceStage !== 'IDLE'}
-          >
-            <Text style={styles.auditionBtnText}>🔊 Thử giọng Duy Oryx (Audition Test)</Text>
-          </TouchableOpacity>
         </View>
 
         {/* TRANSCRIPT & RESPONSE CARD */}
@@ -761,7 +699,7 @@ export default function App() {
             )}
             {brainResponse !== '' && (
               <View style={[styles.dialogueRow, { marginTop: 8 }]}>
-                <Text style={styles.dialogueSpeakerBrain}>Brain Duy Oryx:</Text>
+                <Text style={styles.dialogueSpeakerBrain}>BOWCON:</Text>
                 <Text style={styles.dialogueBrainText}>{brainResponse}</Text>
               </View>
             )}
@@ -942,7 +880,7 @@ const styles = StyleSheet.create({
   pttSection: {
     alignItems: 'center',
     justifyContent: 'center',
-    paddingVertical: 18,
+    paddingVertical: 24,
   },
   pttButtonOuter: {
     width: 150,
@@ -973,20 +911,6 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '800',
     letterSpacing: 1,
-  },
-  auditionBtn: {
-    marginTop: 12,
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    borderRadius: 20,
-    backgroundColor: '#1E293B',
-    borderWidth: 1,
-    borderColor: '#334155',
-  },
-  auditionBtnText: {
-    color: '#38BDF8',
-    fontSize: 12,
-    fontWeight: '700',
   },
   transcriptCard: {
     backgroundColor: '#111827',
